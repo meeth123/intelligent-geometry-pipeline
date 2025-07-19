@@ -12,6 +12,7 @@ import tempfile
 import base64
 from typing import Dict, Any, Optional
 import google.generativeai as genai
+from datetime import datetime
 
 from .data_structures import LayoutPlan, RenderSet, AgentError, Status
 
@@ -26,6 +27,33 @@ class Renderer:
         """Initialize the Renderer with Gemini 2.5 Pro."""
         self.model = None
         self._setup_gemini()
+        
+        # Create debug directory for JSON logs
+        self.debug_dir = "debug_json_responses"
+        os.makedirs(self.debug_dir, exist_ok=True)
+    
+    def _save_debug_json(self, response_text: str, prompt_id: str, status: str):
+        """Save raw JSON response for debugging purposes"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"renderer_{prompt_id[:8]}_{timestamp}_{status}.json"
+            filepath = os.path.join(self.debug_dir, filename)
+            
+            debug_data = {
+                "agent": "renderer",
+                "prompt_id": prompt_id,
+                "timestamp": timestamp,
+                "status": status,
+                "raw_response": response_text,
+                "response_length": len(response_text)
+            }
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(debug_data, f, indent=2, ensure_ascii=False)
+                
+            logger.debug(f"Saved debug JSON to {filepath}")
+        except Exception as e:
+            logger.warning(f"Failed to save debug JSON: {e}")
     
     def _setup_gemini(self):
         """Configure Gemini 2.5 Pro for rendering optimization."""
@@ -39,7 +67,7 @@ class Renderer:
                 logger.warning("Setting Google API key directly in environment")
             
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-flash')
+            self.model = genai.GenerativeModel('gemini-2.5-pro')
             logger.info("Gemini renderer configured successfully")
             
         except Exception as e:
@@ -132,6 +160,10 @@ Focus on creating a professional, publication-ready geometric diagram.
             response = self.model.generate_content(render_prompt)
             response_text = response.text
             
+            # Save raw response for debugging
+            layout_id = getattr(layout_plan, 'layout_id', 'rendering')
+            self._save_debug_json(response_text, layout_id, "raw_response")
+            
             logger.info(f"Gemini rendering response: {len(response_text)} characters")
             
             # Extract reasoning for frontend display
@@ -148,10 +180,15 @@ Focus on creating a professional, publication-ready geometric diagram.
             # Parse JSON response
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
             if json_match:
-                render_data = json.loads(json_match.group(1))
+                json_str = json_match.group(1)
+                render_data = json.loads(json_str)
+                # Save successfully parsed JSON
+                self._save_debug_json(json_str, layout_id, "parsed_success")
             else:
                 # Fallback parsing
                 render_data = json.loads(response_text)
+                # Save fallback parsed JSON
+                self._save_debug_json(response_text, layout_id, "fallback_parsed")
             
             # Extract optimized SVG
             optimized_svg = render_data.get('optimized_svg', layout_plan.svg)
@@ -178,12 +215,194 @@ Focus on creating a professional, publication-ready geometric diagram.
             
         except json.JSONDecodeError as e:
             logger.error(f"JSON parsing failed: {e}")
+            
+            # Save failed JSON for debugging
+            self._save_debug_json(response_text, layout_id, "parse_failed")
+            
+            # Try to clean the JSON and parse again
+            try:
+                cleaned_response = self._clean_json_response(response_text)
+                render_decisions = json.loads(cleaned_response)
+                
+                # Save cleaned successful JSON
+                self._save_debug_json(cleaned_response, layout_id, "cleaned_success")
+                
+                # Continue with cleaned JSON
+                final_svg = render_decisions.get('optimized_svg', '')
+                if final_svg:
+                    logger.info("Successfully parsed cleaned JSON response")
+                    return RenderSet(
+                        render_svg=final_svg,
+                        rendering_decisions=render_decisions.get('optimization_decisions', {}),
+                        metadata=render_decisions.get('metadata', {}),
+                        agent_reasoning={'renderer': reasoning}
+                    )
+                    
+            except Exception as cleanup_error:
+                logger.warning(f"JSON cleanup also failed: {cleanup_error}")
+                # Save final failed attempt
+                self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
+                                    layout_id, "cleanup_failed")
+            
             return self._create_fallback_render(layout_plan)
             
         except Exception as e:
             logger.error(f"Gemini rendering failed: {e}")
             return self._create_fallback_render(layout_plan)
 
+    def _clean_json_response(self, response_text: str) -> str:
+        """Enhanced JSON response cleaning with specialized fixes for common AI response issues."""
+        import re
+        import json
+        
+        # Stage 1: Extract JSON from markdown code blocks
+        code_block_match = re.search(r'```[a-zA-Z]*\s*(\{.*\})\s*```', response_text, re.DOTALL)
+        if code_block_match:
+            response_text = code_block_match.group(1)
+        
+        # Stage 2: Remove control characters (except valid JSON whitespace)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', response_text)
+        
+        # Stage 3: Enhanced fixes for specific common issues
+        
+        # Fix 1: Missing commas between array objects
+        cleaned = re.sub(r'}(\s*\n\s*)\{', r'},\1{', cleaned)
+        cleaned = re.sub(r'}(\s+)\{', r'},\1{', cleaned)
+        
+        # Fix 2: Enhanced SVG quote escaping for complex content
+        def fix_svg_field_quotes(text, field_name):
+            # Enhanced parsing to handle mixed escaping scenarios
+            # 1. Find SVG field content precisely
+            # 2. Count consecutive backslashes to determine escape state
+            # 3. Normalize all quotes: remove existing escaping
+            # 4. Properly re-escape all quotes for JSON consistency
+            field_pattern = f'"{field_name}"\\s*:\\s*"'
+            match = re.search(field_pattern, text)
+            if not match:
+                return text
+            
+            content_start = match.end() - 1  # Position of opening quote
+            
+            # Enhanced parsing to handle mixed escaping scenarios
+            i = content_start + 1  # Start after opening quote
+            content_end = i
+            
+            while i < len(text):
+                char = text[i]
+                
+                if char == '\\':
+                    # Count consecutive backslashes
+                    backslash_count = 0
+                    while i < len(text) and text[i] == '\\':
+                        backslash_count += 1
+                        i += 1
+                    
+                    # If followed by a quote, check if it's properly escaped
+                    if i < len(text) and text[i] == '"':
+                        if backslash_count % 2 == 1:
+                            # Odd number of backslashes = escaped quote (continue)
+                            i += 1
+                            continue
+                        else:
+                            # Even number of backslashes = unescaped quote
+                            remaining = text[i+1:].strip()
+                            if remaining.startswith(',') or remaining.startswith('}'):
+                                content_end = i
+                                break
+                            i += 1
+                            continue
+                    continue
+                    
+                elif char == '"':
+                    # Direct unescaped quote - check if it ends the field
+                    remaining = text[i+1:].strip()
+                    if remaining.startswith(',') or remaining.startswith('}'):
+                        content_end = i
+                        break
+                    i += 1
+                    continue
+                else:
+                    i += 1
+            
+            if content_end > content_start + 1:
+                # Extract the SVG content (between quotes)
+                svg_content = text[content_start + 1:content_end]
+                
+                # Normalize quotes: remove all existing escaping, then properly escape
+                normalized = svg_content
+                # Remove double escaping first (\\\\" -> \\")
+                normalized = normalized.replace('\\\\"', '\\"')
+                # Remove single escaping (\\") -> ")
+                normalized = normalized.replace('\\"', '"')
+                # Now properly escape all quotes for JSON
+                fixed_content = normalized.replace('"', '\\"')
+                
+                return text[:content_start + 1] + fixed_content + text[content_end:]
+            
+            return text
+        
+        for svg_field in ['optimized_svg', 'svg_content', 'render_svg']:
+            cleaned = fix_svg_field_quotes(cleaned, svg_field)
+        
+        # Fix 3: Remove trailing commas before closing braces/brackets
+        cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+        
+        # Fix 4: Corrupted HTML/SVG closing tags (Issue #3)
+        def fix_corrupted_closing_tags(text):
+            corrupted_tag_pattern = r'\\([a-zA-Z][a-zA-Z0-9]*)'
+            
+            def fix_tag(match):
+                tag_name = match.group(1)
+                remaining_text = text[match.end():]
+                if remaining_text.startswith('>'):
+                    return f'</{tag_name}'
+                else:
+                    return match.group(0)
+            
+            return re.sub(corrupted_tag_pattern, fix_tag, text)
+        
+        cleaned = fix_corrupted_closing_tags(cleaned)
+        
+        # Stage 4: Test if fixes worked
+        try:
+            json.loads(cleaned)
+            return cleaned.strip()
+        except:
+            # Stage 5: More aggressive cleaning for complex cases
+            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if json_match:
+                extracted = json_match.group()
+                
+                extracted = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', extracted)
+                extracted = re.sub(r',(\s*[}\]])', r'\1', extracted)
+                
+                in_string = False
+                escape_next = False
+                result = ""
+                
+                for char in extracted:
+                    if escape_next:
+                        result += char
+                        escape_next = False
+                    elif char == '\\':
+                        result += char
+                        escape_next = True
+                    elif char == '"' and not escape_next:
+                        in_string = not in_string
+                        result += char
+                    elif char == '\n' and in_string:
+                        result += '\\n'
+                    elif char == '\t' and in_string:
+                        result += '\\t'
+                    elif char == '\r' and in_string:
+                        result += '\\r'
+                    else:
+                        result += char
+                
+                return result.strip()
+        
+        return cleaned.strip()
+    
     def _create_fallback_render(self, layout_plan: LayoutPlan) -> RenderSet:
         """Create a simple fallback render when AI fails."""
         logger.warning("Creating fallback render")

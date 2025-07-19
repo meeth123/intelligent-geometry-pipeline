@@ -12,7 +12,7 @@ import os
 from typing import Union, Optional, Dict, Any
 from .data_structures import (
     PromptBundle, GeometrySpec, CoordinateSolution, LayoutPlan, 
-    RenderSet, QAReport, FinalAssets, AgentError, Status
+    RenderSet, QAReport, FinalAssets, AgentError, ClarificationRequest, Status
 )
 from . import prompt_interpreter
 from . import image_preprocessor  
@@ -177,7 +177,7 @@ Return a JSON describing the merged specification:
             status=Status.DRAFT
         )
     
-    def process_prompt_bundle(self, prompt_bundle: PromptBundle, update_callback=None) -> Union[GeometrySpec, AgentError]:
+    def process_prompt_bundle(self, prompt_bundle: PromptBundle, update_callback=None) -> Union[GeometrySpec, AgentError, ClarificationRequest]:
         """Process the initial prompt bundle through prompt and vision interpreters."""
         logger.info(f"Processing prompt bundle: {prompt_bundle.prompt_id}")
         
@@ -196,6 +196,13 @@ Return a JSON describing the merged specification:
                     message="Please rephrase your prompt. The text could not be interpreted.",
                     details={"original_error": prompt_result.message}
                 )
+            return prompt_result
+        elif isinstance(prompt_result, ClarificationRequest):
+            visualizer.update_agent_status("prompt_interpreter", AgentState.NEEDS_CLARIFICATION,
+                                         "Mathematical contradictions detected - user clarification needed")
+            # Update displays to show clarification request
+            if update_callback:
+                update_callback()
             return prompt_result
         
         visualizer.update_agent_status("prompt_interpreter", AgentState.COMPLETE,
@@ -304,7 +311,7 @@ The pipeline successfully integrated text and vision analysis to create a compre
         logger.info(f"Successfully processed prompt bundle with {len(merged_spec.objects)} objects")
         return merged_spec
     
-    def process_full_pipeline(self, prompt_bundle: PromptBundle, update_callback=None) -> Union[FinalAssets, AgentError]:
+    def process_full_pipeline(self, prompt_bundle: PromptBundle, update_callback=None) -> Union[FinalAssets, AgentError, ClarificationRequest]:
         """Process the complete pipeline from prompt to final assets."""
         
         try:
@@ -331,6 +338,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
             if isinstance(geometry_spec, AgentError):
                 visualizer.update_agent_status("orchestrator", AgentState.ERROR, 
                                              "Error in prompt/image processing")
+                return geometry_spec
+            elif isinstance(geometry_spec, ClarificationRequest):
+                visualizer.update_agent_status("orchestrator", AgentState.NEEDS_CLARIFICATION,
+                                             "Pipeline paused - waiting for user clarification")
                 return geometry_spec
             
             self.session_data[session_id]["geometry_spec"] = geometry_spec

@@ -12,8 +12,9 @@ import google.generativeai as genai
 from typing import Union, Dict, Any, List
 from .data_structures import (
     PromptBundle, GeometrySpec, GeometryObject, GeometryConstraint,
-    Status, AgentError, create_geometry_object, create_constraint
+    Status, AgentError, ClarificationRequest, create_geometry_object, create_constraint
 )
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +43,33 @@ class GeminiPromptInterpreter:
             logger.info("Gemini model configured successfully")
         else:
             logger.warning("Google API key not available - using fallback analysis")
+        
+        # Create debug directory for JSON logs
+        self.debug_dir = "debug_json_responses"
+        os.makedirs(self.debug_dir, exist_ok=True)
+    
+    def _save_debug_json(self, response_text: str, prompt_id: str, status: str):
+        """Save raw JSON response for debugging purposes"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"prompt_interpreter_{prompt_id[:8]}_{timestamp}_{status}.json"
+            filepath = os.path.join(self.debug_dir, filename)
+            
+            debug_data = {
+                "agent": "prompt_interpreter",
+                "prompt_id": prompt_id,
+                "timestamp": timestamp,
+                "status": status,
+                "raw_response": response_text,
+                "response_length": len(response_text)
+            }
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(debug_data, f, indent=2, ensure_ascii=False)
+                
+            logger.debug(f"Saved debug JSON to {filepath}")
+        except Exception as e:
+            logger.warning(f"Failed to save debug JSON: {e}")
     
     def create_geometry_analysis_prompt(self, user_prompt: str) -> str:
         """Create a structured prompt for Gemini geometric reasoning."""
@@ -137,6 +165,9 @@ Be mathematically precise with dimensions and relationships.
             response_text = response.text
             logger.info(f"Gemini Response received: {len(response_text)} characters")
             
+            # Save raw response for debugging
+            self._save_debug_json(response_text, "gemini_analysis", "raw_response")
+            
             # Store the raw Gemini reasoning for frontend display
             raw_reasoning = response_text
             
@@ -149,20 +180,41 @@ Be mathematically precise with dimensions and relationships.
                 if json_start != -1 and json_end > json_start:
                     json_str = response_text[json_start:json_end]
                     parsed_data = json.loads(json_str)
+                    
+                    # Save successfully parsed JSON
+                    self._save_debug_json(json_str, "gemini_analysis", "parsed_success")
                 else:
                     raise ValueError("No JSON found in response")
                     
             except (json.JSONDecodeError, ValueError) as e:
                 logger.error(f"Failed to parse Gemini JSON response: {e}")
-                logger.error(f"Raw response: {response_text[:500]}...")
                 
-                # Create fallback spec but preserve the raw reasoning
-                parsed_data = {
-                    "reasoning": f"Gemini provided reasoning but JSON parsing failed. Raw response: {response_text[:300]}...",
-                    "objects": self.create_fallback_analysis(user_prompt)["objects"],
-                    "constraints": self.create_fallback_analysis(user_prompt)["constraints"],
-                    "extracted_info": {"error": "Failed to parse Gemini JSON but got response"}
-                }
+                # Save failed JSON for debugging
+                self._save_debug_json(response_text, "gemini_analysis", "parse_failed")
+                
+                # Try to clean the JSON and parse again
+                try:
+                    cleaned_response = _clean_json_response(response_text)
+                    parsed_data = json.loads(cleaned_response)
+                    logger.info("Successfully parsed cleaned Gemini JSON response")
+                    
+                    # Save cleaned successful JSON
+                    self._save_debug_json(cleaned_response, "gemini_analysis", "cleaned_success")
+                    
+                except Exception as cleanup_error:
+                    logger.warning(f"Gemini JSON cleanup also failed: {cleanup_error}")
+                    
+                    # Save final failed attempt
+                    self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
+                                        "gemini_analysis", "cleanup_failed")
+                    
+                    # Create fallback spec but preserve the raw reasoning
+                    parsed_data = {
+                        "reasoning": f"Gemini provided reasoning but JSON parsing failed. Raw response: {response_text[:300]}...",
+                        "objects": self.create_fallback_analysis(user_prompt)["objects"],
+                        "constraints": self.create_fallback_analysis(user_prompt)["constraints"],
+                        "extracted_info": {"error": "Failed to parse Gemini JSON but got response"}
+                    }
             
             # Extract Gemini reasoning for display
             gemini_reasoning = parsed_data.get("reasoning", "No reasoning provided")
@@ -308,7 +360,412 @@ Be mathematically precise with dimensions and relationships.
 _ai_interpreter = GeminiPromptInterpreter()
 
 
-def handle(prompt_bundle: PromptBundle) -> Union[GeometrySpec, AgentError]:
+def _clean_json_response(response_text: str) -> str:
+    """Enhanced JSON response cleaning with specialized fixes for common AI response issues."""
+    import re
+    import json
+    
+    # Stage 1: Extract JSON from markdown code blocks
+    code_block_match = re.search(r'```[a-zA-Z]*\s*(\{.*\})\s*```', response_text, re.DOTALL)
+    if code_block_match:
+        response_text = code_block_match.group(1)
+    
+    # Stage 2: Remove control characters (except valid JSON whitespace)
+    cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', response_text)
+    
+    # Stage 3: Enhanced fixes for specific common issues
+    
+    # Fix 1: Missing commas between array objects (Issue #1)
+    # Pattern: } followed by whitespace and { without a comma
+    # Also handle cases with newlines and varied whitespace
+    cleaned = re.sub(r'}(\s*\n\s*)\{', r'},\1{', cleaned)  # Handle newlines
+    cleaned = re.sub(r'}(\s+)\{', r'},\1{', cleaned)  # Handle spaces/tabs
+    
+    # More aggressive: find closing braces followed by opening braces in arrays
+    # Look for patterns like:  }  \n    }  \n    {  (missing comma after first })
+    lines = cleaned.split('\n')
+    fixed_lines = []
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        
+        # If this line is just a closing brace and the next non-empty line starts an object
+        if stripped == '}' and i + 1 < len(lines):
+            # Look ahead to find next non-empty line
+            next_line_idx = i + 1
+            while next_line_idx < len(lines) and not lines[next_line_idx].strip():
+                next_line_idx += 1
+            
+            if next_line_idx < len(lines):
+                next_line = lines[next_line_idx].strip()
+                if next_line == '{':
+                    # This looks like missing comma - add it
+                    fixed_lines.append(line.rstrip() + ',')
+                else:
+                    fixed_lines.append(line)
+            else:
+                fixed_lines.append(line)
+        else:
+            fixed_lines.append(line)
+    
+    cleaned = '\n'.join(fixed_lines)
+    
+    # Fix 2: SVG quote escaping (Issue #2) 
+    # Find SVG fields and properly escape quotes in SVG content
+    def fix_svg_quotes(match):
+        svg_content = match.group(1)  # The SVG content
+        
+        # First unescape any existing escapes to normalize
+        unescaped = svg_content.replace('\\"', '"')
+        # Then properly escape all quotes
+        properly_escaped = unescaped.replace('"', '\\"')
+        
+        return f'"{match.string[match.start():match.start(1)]}"{properly_escaped}"{match.string[match.end(1):match.end()]}"'
+    
+    # Apply SVG quote fixing to common SVG fields
+    # Enhanced SVG quote fixing for complex content with inconsistent escaping
+    def fix_svg_field_quotes(text, field_name):
+        # Find the field and its content more carefully
+        field_pattern = f'"{field_name}"\\s*:\\s*"'
+        match = re.search(field_pattern, text)
+        if not match:
+            return text
+        
+        content_start = match.end() - 1  # Position of opening quote
+        
+        # Find the end of the field by parsing character by character
+        # and tracking escape sequences properly
+        i = content_start + 1  # Start after opening quote
+        escape_level = 0
+        content_end = i
+        
+        while i < len(text):
+            char = text[i]
+            
+            if char == '\\':
+                # Count consecutive backslashes
+                backslash_count = 0
+                while i < len(text) and text[i] == '\\':
+                    backslash_count += 1
+                    i += 1
+                
+                # If followed by a quote, check if it's properly escaped
+                if i < len(text) and text[i] == '"':
+                    if backslash_count % 2 == 1:
+                        # Odd number of backslashes = escaped quote (continue)
+                        i += 1
+                        continue
+                    else:
+                        # Even number of backslashes = unescaped quote
+                        # Check if this ends the field
+                        remaining = text[i+1:].strip()
+                        if remaining.startswith(',') or remaining.startswith('}'):
+                            content_end = i
+                            break
+                        # Otherwise it's an unescaped quote within content
+                        i += 1
+                        continue
+                # Continue with other characters after backslashes
+                continue
+                
+            elif char == '"':
+                # Direct unescaped quote - check if it ends the field
+                remaining = text[i+1:].strip()
+                if remaining.startswith(',') or remaining.startswith('}'):
+                    content_end = i
+                    break
+                # Otherwise it's an unescaped quote within content
+                i += 1
+                continue
+            else:
+                i += 1
+        
+        if content_end > content_start + 1:
+            # Extract the SVG content (between quotes)
+            svg_content = text[content_start + 1:content_end]
+            
+            # Normalize quotes: remove all existing escaping, then properly escape
+            # This handles mixed escaping scenarios
+            normalized = svg_content
+            
+            # Remove double escaping first (\\\\" -> \\")
+            normalized = normalized.replace('\\\\"', '\\"')
+            # Remove single escaping (\\") -> ")
+            normalized = normalized.replace('\\"', '"')
+            
+            # Now properly escape all quotes for JSON
+            fixed_content = normalized.replace('"', '\\"')
+            
+            # Reconstruct the text
+            return text[:content_start + 1] + fixed_content + text[content_end:]
+        
+        return text
+    
+    # Apply the fix to common SVG fields
+    for svg_field in ['optimized_svg', 'svg_content', 'render_svg']:
+        cleaned = fix_svg_field_quotes(cleaned, svg_field)
+    
+    # Fix 3: Remove trailing commas before closing braces/brackets
+    cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+    
+    # Fix 4: Corrupted HTML/SVG closing tags (Issue #3)
+    # Pattern: \tagname> should be </tagname>
+    # Examples: \g> -> </g>, \svg> -> </svg>, \defs> -> </defs>
+    def fix_corrupted_closing_tags(text):
+        # Find patterns like \word> and convert to </word>
+        corrupted_tag_pattern = r'\\([a-zA-Z][a-zA-Z0-9]*)'
+        
+        def fix_tag(match):
+            tag_name = match.group(1)
+            # Only fix if this looks like an HTML/SVG tag and is followed by >
+            remaining_text = text[match.end():]
+            if remaining_text.startswith('>'):
+                return f'</{tag_name}'
+            else:
+                # Not a corrupted tag, leave as is
+                return match.group(0)
+        
+        return re.sub(corrupted_tag_pattern, fix_tag, text)
+    
+    cleaned = fix_corrupted_closing_tags(cleaned)
+    
+    # Stage 4: Fix structural completeness issues
+    # Check for incomplete JSON structures and complete them
+    open_braces = cleaned.count('{')
+    close_braces = cleaned.count('}')
+    open_brackets = cleaned.count('[')
+    close_brackets = cleaned.count(']')
+    
+    # Add missing closing braces and brackets
+    missing_braces = open_braces - close_braces
+    missing_brackets = open_brackets - close_brackets
+    
+    if missing_braces > 0 or missing_brackets > 0:
+        # Add missing closures to complete the JSON
+        for _ in range(missing_brackets):
+            cleaned += '\n    ]'
+        for _ in range(missing_braces):
+            cleaned += '\n}'
+    
+    # Check for unclosed strings (odd number of unescaped quotes)
+    quote_count = 0
+    i = 0
+    while i < len(cleaned):
+        if cleaned[i] == '\\':
+            i += 2  # Skip escaped character
+            continue
+        elif cleaned[i] == '"':
+            quote_count += 1
+        i += 1
+    
+    # If odd number of quotes, we have an unclosed string - close it
+    if quote_count % 2 == 1:
+        cleaned += '"'
+    
+    # Stage 5: Test if fixes worked
+    try:
+        json.loads(cleaned)
+        return cleaned.strip()
+    except:
+        # Stage 5: More aggressive cleaning for complex cases
+        
+        # Extract just the JSON object structure
+        json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+        if json_match:
+            extracted = json_match.group()
+            
+            # Additional aggressive cleaning
+            extracted = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', extracted)
+            extracted = re.sub(r',(\s*[}\]])', r'\1', extracted)
+            
+            # Fix multiline string issues character by character
+            in_string = False
+            escape_next = False
+            result = ""
+            
+            for char in extracted:
+                if escape_next:
+                    result += char
+                    escape_next = False
+                elif char == '\\':
+                    result += char
+                    escape_next = True
+                elif char == '"' and not escape_next:
+                    in_string = not in_string
+                    result += char
+                elif char == '\n' and in_string:
+                    result += '\\n'  # Escape newlines inside strings
+                elif char == '\t' and in_string:
+                    result += '\\t'  # Escape tabs inside strings  
+                elif char == '\r' and in_string:
+                    result += '\\r'  # Escape carriage returns inside strings
+                else:
+                    result += char
+            
+            return result.strip()
+    
+    return cleaned.strip()
+
+
+def _ai_detect_logical_issues(prompt_text: str) -> Union[ClarificationRequest, None]:
+    """
+    Use Gemini AI to detect logical inconsistencies, ambiguities, and contradictions in geometry prompts.
+    
+    Args:
+        prompt_text: The user's input prompt
+        
+    Returns:
+        ClarificationRequest if issues found, None otherwise
+    """
+    try:
+        analysis_prompt = f"""
+You are an expert geometry teacher analyzing a student's geometry problem description for logical inconsistencies, contradictions, and ambiguities.
+
+STUDENT PROMPT TO ANALYZE:
+"{prompt_text}"
+
+Your task: Carefully analyze this geometry prompt and identify any logical problems that would make the construction impossible, ambiguous, or contradictory.
+
+Look for these types of issues:
+
+1. MATHEMATICAL CONTRADICTIONS:
+   - Measurements that don't work together (e.g., "square with 10cm sides inscribed in 5cm circle")
+   - Impossible angle relationships
+   - Conflicting dimensions
+
+2. LOGICAL INCONSISTENCIES:
+   - "Inside" vs "outside" contradictions
+   - "Touching" vs "not touching" conflicts
+   - Parallel vs perpendicular contradictions
+   - Same object described with conflicting properties
+
+3. AMBIGUOUS REFERENCES:
+   - Unclear pronoun references ("it", "them", "this")
+   - Multiple objects with same name but using "the object"
+   - Vague positional descriptions
+
+4. MISSING CRITICAL INFORMATION:
+   - No dimensions specified
+   - Vague spatial relationships ("near", "close to")
+   - Missing reference points for directions
+
+5. IMPOSSIBLE CONSTRUCTIONS:
+   - Geometrically impossible relationships
+   - Invalid measurements (negative, zero)
+   - Angle sums that violate geometric rules
+
+6. TERMINOLOGY INCONSISTENCIES:
+   - Mixed 2D/3D terms
+   - Incorrect geometric vocabulary
+   - Contradictory measurement terms
+
+Return your analysis as JSON in this exact format:
+{{
+    "has_issues": true/false,
+    "issue_category": "MATHEMATICAL_CONTRADICTION" | "LOGICAL_INCONSISTENCY" | "AMBIGUOUS_REFERENCE" | "MISSING_INFORMATION" | "IMPOSSIBLE_CONSTRUCTION" | "TERMINOLOGY_INCONSISTENCY" | "CLEAR",
+    "detected_issues": [
+        "Brief description of issue 1",
+        "Brief description of issue 2"
+    ],
+    "clarification_questions": [
+        "Specific question to resolve issue 1",
+        "Specific question to resolve issue 2"  
+    ],
+    "suggested_resolutions": [
+        "Concrete suggestion to fix issue 1",
+        "Concrete suggestion to fix issue 2"
+    ],
+    "reasoning": "Your step-by-step analysis of why these are issues and how they affect the geometry construction"
+}}
+
+If the prompt is clear and has no logical issues, return {{"has_issues": false, "issue_category": "CLEAR"}}.
+
+Focus on logic and clarity - don't be overly picky about minor wording. Only flag real issues that would prevent accurate geometry construction.
+"""
+
+        # Use Gemini to analyze the prompt
+        response = _ai_interpreter.model.generate_content(analysis_prompt)
+        response_text = response.text.strip()
+        
+        logger.info(f"AI logical analysis response: {len(response_text)} characters")
+        
+        # Parse JSON response
+        import json
+        import re
+        try:
+            # Extract JSON from response
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                analysis_data = json.loads(json_match.group())
+            else:
+                # Fallback parsing
+                analysis_data = json.loads(response_text)
+            
+            # Check if issues were found
+            if analysis_data.get('has_issues', False):
+                logger.info(f"AI detected logical issues: {analysis_data.get('issue_category', 'UNKNOWN')}")
+                
+                return ClarificationRequest(
+                    agent_name="prompt_interpreter",
+                    contradiction_type=analysis_data.get('issue_category', 'GEOMETRY_AMBIGUITY'),
+                    detected_issues=analysis_data.get('detected_issues', ['Logical inconsistency detected']),
+                    clarification_questions=analysis_data.get('clarification_questions', ['Please clarify the geometry requirements']),
+                    suggested_resolutions=analysis_data.get('suggested_resolutions', ['Please provide clearer geometry description']),
+                    original_prompt=prompt_text,
+                    agent_reasoning=analysis_data.get('reasoning', 'AI detected logical inconsistencies in the geometry prompt')
+                )
+            else:
+                logger.info("AI analysis: No logical issues detected")
+                return None
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse AI logical analysis JSON: {e}")
+            
+            # Try to clean the JSON and parse again
+            try:
+                cleaned_response = _clean_json_response(response_text)
+                analysis_data = json.loads(cleaned_response)
+                logger.info("Successfully parsed cleaned AI analysis JSON")
+                
+                # Continue with cleaned analysis data
+                if analysis_data.get('has_issues', False):
+                    return ClarificationRequest(
+                        agent_name="prompt_interpreter",
+                        contradiction_type=analysis_data.get('issue_category', 'GEOMETRY_AMBIGUITY'),
+                        detected_issues=analysis_data.get('detected_issues', ['Logical inconsistency detected']),
+                        clarification_questions=analysis_data.get('clarification_questions', ['Please clarify the geometry requirements']),
+                        suggested_resolutions=analysis_data.get('suggested_resolutions', ['Please provide clearer geometry description']),
+                        original_prompt=prompt_text,
+                        agent_reasoning=analysis_data.get('reasoning', 'AI detected logical inconsistencies in the geometry prompt')
+                    )
+                else:
+                    return None
+                    
+            except Exception as cleanup_error:
+                logger.warning(f"AI analysis JSON cleanup also failed: {cleanup_error}")
+            
+            # Fall back to simple check if JSON parsing fails
+            if any(word in response_text.lower() for word in ['contradiction', 'impossible', 'ambiguous', 'unclear', 'inconsistent']):
+                return ClarificationRequest(
+                    agent_name="prompt_interpreter",
+                    contradiction_type="LOGICAL_INCONSISTENCY",
+                    detected_issues=["AI detected potential logical issues in the prompt"],
+                    clarification_questions=["Please review and clarify your geometry requirements"],
+                    suggested_resolutions=["Provide more specific and consistent geometric descriptions"],
+                    original_prompt=prompt_text,
+                    agent_reasoning="AI analysis detected potential logical inconsistencies but couldn't parse detailed response"
+                )
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error in AI logical analysis: {e}")
+        return None
+
+
+
+
+
+def handle(prompt_bundle: PromptBundle) -> Union[GeometrySpec, AgentError, ClarificationRequest]:
     """
     Main entry point for the AI prompt interpreter agent.
     
@@ -316,7 +773,7 @@ def handle(prompt_bundle: PromptBundle) -> Union[GeometrySpec, AgentError]:
         prompt_bundle: PromptBundle containing user input
         
     Returns:
-        GeometrySpec with AI-extracted geometric information or AgentError
+        GeometrySpec with AI-extracted geometric information, AgentError, or ClarificationRequest for user clarification
     """
     try:
         logger.info("AI Prompt interpreter agent starting...")
@@ -332,6 +789,13 @@ def handle(prompt_bundle: PromptBundle) -> Union[GeometrySpec, AgentError]:
                 error="UNRECOGNIZED_TEXT",
                 message="Prompt text cannot be empty"
             )
+        
+        # AI-powered logical consistency check (unless skipped by user)
+        skip_check = getattr(prompt_bundle, 'skip_contradiction_check', False)
+        if not skip_check:
+            inconsistency_check = _ai_detect_logical_issues(prompt_bundle.text)
+            if inconsistency_check:
+                return inconsistency_check
         
         # Process with AI
         geometry_spec = _ai_interpreter.process_prompt(prompt_bundle)

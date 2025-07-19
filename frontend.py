@@ -8,7 +8,8 @@ import json
 import tempfile
 import os
 import time
-from agents.data_structures import PromptBundle, Status
+import uuid
+from agents.data_structures import PromptBundle, Status, ClarificationRequest
 from agents.orchestrator import handle
 from agents.pipeline_visualizer import get_visualizer
 import logging
@@ -16,6 +17,64 @@ import logging
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+def display_clarification_interface(clarification: ClarificationRequest):
+    """Display the clarification interface for user input."""
+    
+    st.error("🚫 **Pipeline Paused - Mathematical Contradiction Detected**")
+    
+    with st.container():
+        st.markdown("### ❓ Clarification Required")
+        
+        # Show detected issues
+        st.markdown("#### 🔍 Issues Detected:")
+        for i, issue in enumerate(clarification.detected_issues, 1):
+            st.warning(f"{i}. {issue}")
+        
+        # Show clarification questions
+        st.markdown("#### ❓ Please Clarify:")
+        for i, question in enumerate(clarification.clarification_questions, 1):
+            st.info(f"{i}. {question}")
+        
+        # Show suggested resolutions
+        if clarification.suggested_resolutions:
+            st.markdown("#### 💡 Suggested Solutions:")
+            for i, resolution in enumerate(clarification.suggested_resolutions, 1):
+                st.success(f"{i}. {resolution}")
+        
+        # Show original prompt for reference
+        with st.expander("📝 Original Prompt"):
+            st.code(clarification.original_prompt)
+        
+        # User clarification input
+        st.markdown("#### ✏️ Your Clarification:")
+        clarified_prompt = st.text_area(
+            "Please provide a clarified version of your prompt:",
+            value=clarification.original_prompt,
+            height=100,
+            help="Modify your prompt to resolve the contradictions above"
+        )
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Retry with Clarification", type="primary"):
+                if clarified_prompt.strip():
+                    # Store clarified prompt in session state to restart processing
+                    st.session_state['clarified_prompt'] = clarified_prompt.strip()
+                    st.session_state['restart_pipeline'] = True
+                    st.success("✅ Clarification saved! Restarting pipeline...")
+                    st.rerun()
+                else:
+                    st.error("Please provide a clarified prompt before retrying")
+        
+        with col2:
+            if st.button("⏩ Skip Contradiction Check"):
+                # Bypass contradiction check by setting flag
+                st.session_state['skip_contradiction_check'] = True
+                st.session_state['restart_pipeline'] = True
+                st.warning("Proceeding with original prompt - results may be unexpected")
+                st.rerun()
+
 
 def create_thinking_expander(agent_name: str, reasoning: str, step_data: dict = None):
     """Create an expandable section showing Gemini thinking process."""
@@ -335,8 +394,22 @@ def main():
             use_container_width=True
         )
     
-    # Process the input
-    if process_button and user_prompt.strip():
+    # Check for pipeline restart with clarified prompt
+    restart_pipeline = st.session_state.get('restart_pipeline', False)
+    clarified_prompt = st.session_state.get('clarified_prompt', '')
+    skip_contradiction_check = st.session_state.get('skip_contradiction_check', False)
+    
+    # Clear restart flags
+    if restart_pipeline:
+        st.session_state['restart_pipeline'] = False
+        if clarified_prompt:
+            user_prompt = clarified_prompt  # Use clarified prompt
+            st.session_state['clarified_prompt'] = ''  # Clear after use
+        if skip_contradiction_check:
+            st.session_state['skip_contradiction_check'] = False
+    
+    # Process the input (either new submission or restarted pipeline)
+    if (process_button and user_prompt.strip()) or restart_pipeline:
         # Initialize visual pipeline
         visualizer = get_visualizer()
         visualizer.reset_pipeline()  # Reset timing from previous runs
@@ -370,6 +443,12 @@ def main():
         # Initial display
         update_displays()
         
+        # Show restart notification if applicable
+        if restart_pipeline and clarified_prompt:
+            st.info("🔄 **Restarting pipeline with your clarified prompt...**")
+        elif restart_pipeline and skip_contradiction_check:
+            st.warning("⏩ **Restarting pipeline with original prompt (contradiction check skipped)...**")
+        
         with st.spinner("🧠 Gemini AI agents are thinking..."):
             try:
                 # Create prompt bundle
@@ -378,6 +457,10 @@ def main():
                     prompt_id=str(uuid.uuid4()),
                     text=user_prompt.strip()
                 )
+                
+                # Add skip flag if user chose to bypass contradiction check
+                if skip_contradiction_check:
+                    prompt_bundle.skip_contradiction_check = True
                 
                 # Handle image upload
                 image_uri = None
@@ -401,8 +484,14 @@ def main():
                 if image_uri and os.path.exists(image_uri):
                     os.unlink(image_uri)
                 
+                # Handle different result types
+                if isinstance(result, ClarificationRequest):
+                    # Display clarification interface
+                    display_clarification_interface(result)
+                    st.stop()  # Stop execution to wait for user input
+                
                 # Display results
-                if hasattr(result, 'pipeline_metadata') and result.pipeline_metadata.get('pipeline_status') == 'COMPLETE':
+                elif hasattr(result, 'pipeline_metadata') and result.pipeline_metadata.get('pipeline_status') == 'COMPLETE':
                     # Complete pipeline success - FinalAssets returned
                     st.success("🎉 Complete Gemini AI Pipeline Success!")
                     st.info("📊 All 6 agents completed successfully: Prompt → Vision → Image Preprocessor → Symbolic Planner → Layout Designer → Renderer → Math Verifier")

@@ -10,6 +10,7 @@ import json
 import re
 from typing import Dict, Any, Optional, List
 import google.generativeai as genai
+from datetime import datetime
 
 from .data_structures import CoordinateSolution, QAReport, AgentError, Status
 
@@ -24,6 +25,33 @@ class MathConsistencyVerifier:
         """Initialize the Math Consistency Verifier with Gemini 2.5 Pro."""
         self.model = None
         self._setup_gemini()
+        
+        # Create debug directory for JSON logs
+        self.debug_dir = "debug_json_responses"
+        os.makedirs(self.debug_dir, exist_ok=True)
+    
+    def _save_debug_json(self, response_text: str, prompt_id: str, status: str):
+        """Save raw JSON response for debugging purposes"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"math_verifier_{prompt_id[:8]}_{timestamp}_{status}.json"
+            filepath = os.path.join(self.debug_dir, filename)
+            
+            debug_data = {
+                "agent": "math_consistency_verifier",
+                "prompt_id": prompt_id,
+                "timestamp": timestamp,
+                "status": status,
+                "raw_response": response_text,
+                "response_length": len(response_text)
+            }
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(debug_data, f, indent=2, ensure_ascii=False)
+                
+            logger.debug(f"Saved debug JSON to {filepath}")
+        except Exception as e:
+            logger.warning(f"Failed to save debug JSON: {e}")
     
     def _setup_gemini(self):
         """Configure Gemini 2.5 Pro for mathematical verification."""
@@ -155,6 +183,10 @@ Perform a thorough mathematical verification and provide detailed analysis.
             response = self.model.generate_content(verification_prompt)
             response_text = response.text
             
+            # Save raw response for debugging
+            coord_id = getattr(coordinate_solution, 'solution_id', 'verification')
+            self._save_debug_json(response_text, coord_id, "raw_response")
+            
             logger.info(f"Gemini verification response: {len(response_text)} characters")
             
             # Extract reasoning for frontend display
@@ -171,10 +203,15 @@ Perform a thorough mathematical verification and provide detailed analysis.
             # Parse JSON response
             json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
             if json_match:
-                verification_data = json.loads(json_match.group(1))
+                json_str = json_match.group(1)
+                verification_data = json.loads(json_str)
+                # Save successfully parsed JSON
+                self._save_debug_json(json_str, coord_id, "parsed_success")
             else:
                 # Fallback parsing
                 verification_data = json.loads(response_text)
+                # Save fallback parsed JSON
+                self._save_debug_json(response_text, coord_id, "fallback_parsed")
             
             # Extract verification results
             verification_status = verification_data.get('verification_status', 'ISSUES_FOUND')
@@ -211,12 +248,119 @@ Perform a thorough mathematical verification and provide detailed analysis.
             
         except json.JSONDecodeError as e:
             logger.error(f"JSON parsing failed: {e}")
+            
+            # Save failed JSON for debugging
+            self._save_debug_json(response_text, coord_id, "parse_failed")
+            
+            # Try to clean the JSON and parse again
+            try:
+                cleaned_response = self._clean_json_response(response_text)
+                verification_data = json.loads(cleaned_response)
+                logger.info("Successfully parsed cleaned JSON response")
+                
+                # Save cleaned successful JSON
+                self._save_debug_json(cleaned_response, coord_id, "cleaned_success")
+                
+                # Continue with cleaned verification data
+                qa_report = QAReport(
+                    status=Status.VERIFIED if verification_data.get('all_constraints_satisfied', False) else Status.FAILED,
+                    tolerance_mm=tolerance_mm,
+                    issues=verification_data.get('issues_found', [])
+                )
+                
+                qa_report.verification_data = verification_data
+                qa_report.agent_reasoning = getattr(coordinate_solution, 'agent_reasoning', {})
+                return qa_report
+                
+            except Exception as cleanup_error:
+                logger.warning(f"JSON cleanup also failed: {cleanup_error}")
+                # Save final failed attempt
+                self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
+                                    coord_id, "cleanup_failed")
+            
             return self._create_fallback_qa_report(coordinate_solution, tolerance_mm)
             
         except Exception as e:
             logger.error(f"Gemini verification failed: {e}")
             return self._create_fallback_qa_report(coordinate_solution, tolerance_mm)
 
+    def _clean_json_response(self, response_text: str) -> str:
+        """Clean JSON response by removing control characters and fixing common issues."""
+        import re
+        import json
+        
+        # First, handle markdown code blocks (```json ... ```)
+        code_block_match = re.search(r'```[a-zA-Z]*\s*(\{.*\})\s*```', response_text, re.DOTALL)
+        if code_block_match:
+            response_text = code_block_match.group(1)
+        
+        # Remove control characters (except valid JSON whitespace)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', response_text)
+        
+        # Remove trailing commas before closing braces/brackets
+        cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+        
+        # Fix corrupted HTML/SVG closing tags (Issue #3)
+        def fix_corrupted_closing_tags(text):
+            corrupted_tag_pattern = r'\\([a-zA-Z][a-zA-Z0-9]*)'
+            
+            def fix_tag(match):
+                tag_name = match.group(1)
+                remaining_text = text[match.end():]
+                if remaining_text.startswith('>'):
+                    return f'</{tag_name}'
+                else:
+                    return match.group(0)
+            
+            return re.sub(corrupted_tag_pattern, fix_tag, text)
+        
+        cleaned = fix_corrupted_closing_tags(cleaned)
+        
+        # If it's still not valid JSON, try a more aggressive approach
+        try:
+            json.loads(cleaned)
+            return cleaned.strip()
+        except:
+            # More aggressive cleaning for problematic cases
+            
+            # Extract just the JSON object structure
+            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if json_match:
+                extracted = json_match.group()
+                
+                # Clean up the extracted JSON more aggressively
+                extracted = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', extracted)
+                extracted = re.sub(r',(\s*[}\]])', r'\1', extracted)
+                
+                # Try to fix common issues with multiline strings
+                # Replace literal newlines in string values with \n
+                in_string = False
+                escape_next = False
+                result = ""
+                
+                for char in extracted:
+                    if escape_next:
+                        result += char
+                        escape_next = False
+                    elif char == '\\':
+                        result += char
+                        escape_next = True
+                    elif char == '"' and not escape_next:
+                        in_string = not in_string
+                        result += char
+                    elif char == '\n' and in_string:
+                        result += '\\n'  # Escape newlines inside strings
+                    elif char == '\t' and in_string:
+                        result += '\\t'  # Escape tabs inside strings  
+                    elif char == '\r' and in_string:
+                        result += '\\r'  # Escape carriage returns inside strings
+                    else:
+                        result += char
+                
+                return result.strip()
+        
+        return cleaned.strip()
+    
     def _create_fallback_qa_report(self, coordinate_solution: CoordinateSolution, tolerance_mm: float) -> QAReport:
         """Create a basic fallback QA report when AI fails."""
         logger.warning("Creating fallback QA report")

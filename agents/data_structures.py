@@ -158,6 +158,18 @@ class AgentError:
     details: Optional[Dict[str, Any]] = None
 
 
+@dataclass
+class ClarificationRequest:
+    """Request for user clarification on contradictions or ambiguities."""
+    agent_name: str
+    contradiction_type: str
+    detected_issues: List[str]
+    clarification_questions: List[str]
+    suggested_resolutions: List[str]
+    original_prompt: str
+    agent_reasoning: str = ""
+
+
 class NumericExtractor:
     """Utility class for extracting numeric values from text."""
     

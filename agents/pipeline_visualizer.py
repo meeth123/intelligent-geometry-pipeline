@@ -18,6 +18,7 @@ class AgentState(Enum):
     COMPLETE = "✅ Complete"
     ERROR = "❌ Error"
     HANDOFF = "🤝 Handing off"
+    NEEDS_CLARIFICATION = "❓ Needs Clarification"
 
 @dataclass
 class AgentStatus:
@@ -279,7 +280,8 @@ class PipelineVisualizer:
             AgentState.PROCESSING: "#1E90FF",
             AgentState.COMPLETE: "#32CD32",
             AgentState.ERROR: "#DC143C",
-            AgentState.HANDOFF: "#9370DB"
+            AgentState.HANDOFF: "#9370DB",
+            AgentState.NEEDS_CLARIFICATION: "#FF6B35"
         }
         return color_map.get(state, "#808080")
     
@@ -301,6 +303,8 @@ class PipelineVisualizer:
                 st.info(f"{agent.icon} {agent.name} 🔄 {agent.thinking_message}")
             elif agent.state == AgentState.ERROR:
                 st.error(f"{agent.icon} {agent.name} ❌")
+            elif agent.state == AgentState.NEEDS_CLARIFICATION:
+                st.warning(f"{agent.icon} {agent.name} ❓ Needs Clarification")
             else:
                 st.write(f"{agent.icon} {agent.name} ⏳")
     

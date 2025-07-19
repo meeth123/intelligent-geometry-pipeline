@@ -11,6 +11,7 @@ import os
 import math
 import google.generativeai as genai
 from typing import Union, Dict, Any, List, Tuple
+from datetime import datetime
 from .data_structures import (
     GeometrySpec, CoordinateSolution, AgentError, Status,
     GeometryObject, GeometryConstraint
@@ -43,6 +44,33 @@ class GeminiSymbolicGeometryPlanner:
             logger.info("Gemini symbolic geometry planner configured successfully")
         else:
             logger.warning("Google API key not available - using fallback constraint solving")
+        
+        # Create debug directory for JSON logs
+        self.debug_dir = "debug_json_responses"
+        os.makedirs(self.debug_dir, exist_ok=True)
+    
+    def _save_debug_json(self, response_text: str, prompt_id: str, status: str):
+        """Save raw JSON response for debugging purposes"""
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"symbolic_planner_{prompt_id[:8]}_{timestamp}_{status}.json"
+            filepath = os.path.join(self.debug_dir, filename)
+            
+            debug_data = {
+                "agent": "symbolic_geometry_planner",
+                "prompt_id": prompt_id,
+                "timestamp": timestamp,
+                "status": status,
+                "raw_response": response_text,
+                "response_length": len(response_text)
+            }
+            
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(debug_data, f, indent=2, ensure_ascii=False)
+                
+            logger.debug(f"Saved debug JSON to {filepath}")
+        except Exception as e:
+            logger.warning(f"Failed to save debug JSON: {e}")
     
     def create_constraint_solving_prompt(self, geometry_spec: GeometrySpec) -> str:
         """Create a structured prompt for Gemini mathematical constraint solving."""
@@ -184,6 +212,10 @@ Focus on mathematical rigor and geometric precision.
             response_text = response.text
             logger.info(f"Gemini constraint solving response: {len(response_text)} characters")
             
+            # Save raw response for debugging
+            geom_id = getattr(geometry_spec, 'spec_id', 'constraint_solving')
+            self._save_debug_json(response_text, geom_id, "raw_response")
+            
             # Try to extract JSON from the response
             try:
                 json_start = response_text.find('{')
@@ -192,21 +224,43 @@ Focus on mathematical rigor and geometric precision.
                 if json_start != -1 and json_end > json_start:
                     json_str = response_text[json_start:json_end]
                     parsed_data = json.loads(json_str)
+                    
+                    # Save successfully parsed JSON
+                    self._save_debug_json(json_str, geom_id, "parsed_success")
                 else:
                     raise ValueError("No JSON found in response")
                     
             except (json.JSONDecodeError, ValueError) as e:
                 logger.error(f"Failed to parse Gemini constraint solving JSON: {e}")
-                logger.error(f"Raw response: {response_text[:500]}...")
                 
-                # Create fallback with raw reasoning
-                parsed_data = {
-                    "reasoning": f"Gemini provided mathematical reasoning but JSON parsing failed. Raw response: {response_text[:300]}...",
-                    "coordinate_system": {"origin": "center", "units": "cm"},
-                    "solved_objects": self.create_fallback_solution(geometry_spec)["solved_objects"],
-                    "constraint_verification": [],
-                    "solution_quality": {"all_constraints_satisfied": False, "confidence": 0.3}
-                }
+                # Save failed JSON for debugging
+                self._save_debug_json(response_text, geom_id, "parse_failed")
+                
+                # Try to clean the JSON and parse again
+                try:
+                    cleaned_response = self._clean_json_response(response_text)
+                    parsed_data = json.loads(cleaned_response)
+                    logger.info("Successfully parsed cleaned JSON response")
+                    
+                    # Save cleaned successful JSON
+                    self._save_debug_json(cleaned_response, geom_id, "cleaned_success")
+                    
+                except Exception as cleanup_error:
+                    logger.warning(f"JSON cleanup also failed: {cleanup_error}")
+                    logger.error(f"Raw response: {response_text[:500]}...")
+                    
+                    # Save final failed attempt
+                    self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
+                                        geom_id, "cleanup_failed")
+                    
+                    # Create fallback with raw reasoning
+                    parsed_data = {
+                        "reasoning": f"Gemini provided mathematical reasoning but JSON parsing failed. Raw response: {response_text[:300]}...",
+                        "coordinate_system": {"origin": "center", "units": "cm"},
+                        "solved_objects": self.create_fallback_solution(geometry_spec)["solved_objects"],
+                        "constraint_verification": [],
+                        "solution_quality": {"all_constraints_satisfied": False, "confidence": 0.3}
+                    }
             
             # Add debugging info
             logger.info(f"Gemini reasoning extracted: {parsed_data.get('reasoning', 'No reasoning')[:100]}...")
@@ -216,6 +270,83 @@ Focus on mathematical rigor and geometric precision.
         except Exception as e:
             logger.error(f"Gemini constraint solving failed: {e}")
             return self.create_fallback_solution(geometry_spec)
+    
+    def _clean_json_response(self, response_text: str) -> str:
+        """Clean JSON response by removing control characters and fixing common issues."""
+        import re
+        import json
+        
+        # First, handle markdown code blocks (```json ... ```)
+        code_block_match = re.search(r'```[a-zA-Z]*\s*(\{.*\})\s*```', response_text, re.DOTALL)
+        if code_block_match:
+            response_text = code_block_match.group(1)
+        
+        # Remove control characters (except valid JSON whitespace)
+        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', response_text)
+        
+        # Remove trailing commas before closing braces/brackets
+        cleaned = re.sub(r',(\s*[}\]])', r'\1', cleaned)
+        
+        # Fix corrupted HTML/SVG closing tags (Issue #3)
+        def fix_corrupted_closing_tags(text):
+            corrupted_tag_pattern = r'\\([a-zA-Z][a-zA-Z0-9]*)'
+            
+            def fix_tag(match):
+                tag_name = match.group(1)
+                remaining_text = text[match.end():]
+                if remaining_text.startswith('>'):
+                    return f'</{tag_name}'
+                else:
+                    return match.group(0)
+            
+            return re.sub(corrupted_tag_pattern, fix_tag, text)
+        
+        cleaned = fix_corrupted_closing_tags(cleaned)
+        
+        # If it's still not valid JSON, try a more aggressive approach
+        try:
+            json.loads(cleaned)
+            return cleaned.strip()
+        except:
+            # More aggressive cleaning for problematic cases
+            
+            # Extract just the JSON object structure
+            json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)
+            if json_match:
+                extracted = json_match.group()
+                
+                # Clean up the extracted JSON more aggressively
+                extracted = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', extracted)
+                extracted = re.sub(r',(\s*[}\]])', r'\1', extracted)
+                
+                # Try to fix common issues with multiline strings
+                # Replace literal newlines in string values with \n
+                in_string = False
+                escape_next = False
+                result = ""
+                
+                for char in extracted:
+                    if escape_next:
+                        result += char
+                        escape_next = False
+                    elif char == '\\':
+                        result += char
+                        escape_next = True
+                    elif char == '"' and not escape_next:
+                        in_string = not in_string
+                        result += char
+                    elif char == '\n' and in_string:
+                        result += '\\n'  # Escape newlines inside strings
+                    elif char == '\t' and in_string:
+                        result += '\\t'  # Escape tabs inside strings  
+                    elif char == '\r' and in_string:
+                        result += '\\r'  # Escape carriage returns inside strings
+                    else:
+                        result += char
+                
+                return result.strip()
+        
+        return cleaned.strip()
     
     def create_fallback_solution(self, geometry_spec: GeometrySpec) -> Dict[str, Any]:
         """Create a basic fallback solution when Gemini is not available."""

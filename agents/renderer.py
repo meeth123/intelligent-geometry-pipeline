@@ -39,7 +39,7 @@ class Renderer:
                 logger.warning("Setting Google API key directly in environment")
             
             genai.configure(api_key=api_key)
-            self.model = genai.GenerativeModel('gemini-2.5-pro')
+            self.model = genai.GenerativeModel('gemini-2.5-flash')
             logger.info("Gemini renderer configured successfully")
             
         except Exception as e:

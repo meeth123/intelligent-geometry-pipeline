@@ -28,7 +28,7 @@ class GeminiVisionInterpreter:
     def __init__(self):
         self.min_confidence_threshold = 0.5
         self.max_tokens = 8000  # Gemini optimal token count
-        self.model_name = "gemini-2.5-pro"  # Gemini 2.5 Pro with vision and superior reasoning
+        self.model_name = "gemini-2.5-flash"  # Gemini 2.5 Flash with vision for fast image analysis
         
         # Get API key with fallback
         self.api_key = os.getenv('GOOGLE_API_KEY')

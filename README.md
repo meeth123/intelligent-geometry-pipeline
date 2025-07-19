@@ -21,7 +21,7 @@ This project implements a sophisticated AI-powered geometry pipeline that transf
 
 ## 🏗️ Architecture
 
-The pipeline consists of 6 specialized AI agents, each powered by Gemini 2.5 Pro:
+The pipeline consists of 6 specialized AI agents, optimized with Gemini 2.5 Pro for complex reasoning and Gemini 2.5 Flash for fast processing:
 
 ```mermaid
 graph LR
@@ -45,6 +45,24 @@ graph LR
 | **🎨 Layout Designer** | Create SVG layouts | Coordinate solution | Layout plan |
 | **🖨️ Renderer** | Generate final outputs | Layout plan | Optimized renders |
 | **✅ Math Consistency Verifier** | Verify accuracy | Final solution | Quality report |
+
+### 🚀 Model Optimization
+
+The pipeline uses an intelligent model allocation strategy for optimal performance:
+
+**🔥 Gemini 2.5 Pro** (Complex Reasoning):
+- **🎯 Orchestrator**: Pipeline coordination and intelligent merging
+- **🔢 Symbolic Geometry Planner**: Mathematical constraint solving and derivations
+
+**⚡ Gemini 2.5 Flash** (Fast Processing):
+- **🧠 Prompt Interpreter**: Natural language parsing
+- **🖼️ Image Preprocessor**: Image enhancement decisions  
+- **👁️ Vision Interpreter**: Visual object detection
+- **🎨 Layout Designer**: SVG layout creation
+- **🖨️ Renderer**: Output optimization
+- **✅ Math Consistency Verifier**: Accuracy validation
+
+This optimization provides **faster processing** and **lower costs** while maintaining **high-quality reasoning** where it matters most.
 
 ## 🚀 Quick Start
 
@@ -153,7 +171,8 @@ The system supports multiple methods for API key configuration:
    - The system includes fallback key handling for development
 
 ### Model Configuration
-- **Default Model**: `gemini-2.5-pro`
+- **Complex Reasoning**: `gemini-2.5-pro` (Orchestrator, Symbolic Planner)
+- **Fast Processing**: `gemini-2.5-flash` (Other agents)
 - **Token Limit**: 8000 tokens
 - **Temperature**: 0.1 (for mathematical precision)
 

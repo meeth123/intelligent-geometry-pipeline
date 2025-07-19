@@ -27,7 +27,7 @@ class IntelligentImagePreProcessor:
     
     def __init__(self):
         self.supported_formats = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.webp'}
-        self.model_name = "gemini-2.5-pro"  # Use Gemini 2.5 Pro for superior reasoning
+        self.model_name = "gemini-2.5-flash"  # Use Gemini 2.5 Flash for fast image preprocessing
         self.max_tokens = 4000
         self.api_key = os.getenv('GOOGLE_API_KEY')
         

@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class GeminiPromptInterpreter:
-    """Uses Gemini 2.5 Pro to interpret text prompts and extract geometric specifications."""
+    """Uses Gemini 2.5 flash to interpret text prompts and extract geometric specifications."""
     
     def __init__(self):
-        self.model_name = "gemini-2.5-pro"  # Gemini 2.5 Pro with superior reasoning capabilities
+        self.model_name = "gemini-2.5-flash"  # Gemini 2.5 flash with superior reasoning capabilities
         self.max_tokens = 8000  # Gemini optimal token count
         
         # Get API key with fallback

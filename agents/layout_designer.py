@@ -8,7 +8,7 @@ import os
 import logging
 import json
 import re
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import google.generativeai as genai
 from datetime import datetime
 
@@ -109,8 +109,8 @@ class LayoutDesigner:
                 details={"agent": "layout_designer", "error": str(e)}
             )
 
-    def _design_layout_with_ai(self, coordinate_solution: CoordinateSolution) -> LayoutPlan:
-        """Use Gemini 2.5 Pro to create an intelligent SVG layout."""
+    def _design_layout_with_ai(self, coordinate_solution: CoordinateSolution) -> Union[LayoutPlan, AgentError]:
+        """Use Gemini 2.5 Pro to create an intelligent SVG layout with retry mechanism."""
         
         # Prepare coordinate data for AI analysis
         layout_prompt = f"""
@@ -151,109 +151,135 @@ RESPONSE FORMAT:
 ```
 
 Think step-by-step about the best way to visualize this geometry clearly and beautifully.
+
+IMPORTANT: Your entire response must be ONLY the JSON object. Do not include any text, notes, or markdown formatting like ```json before or after the JSON structure.
 """
         
-        try:
-            logger.info(f"Designing layout for {len(coordinate_solution.object_coordinates)} objects")
-            
-            response = self.model.generate_content(layout_prompt)
-            response_text = response.text
-            
-            # Save raw response for debugging
-            coord_id = getattr(coordinate_solution, 'solution_id', 'layout_design')
-            self._save_debug_json(response_text, coord_id, "raw_response")
-            
-            logger.info(f"Gemini layout design response: {len(response_text)} characters")
-            
-            # Extract reasoning for frontend display
-            reasoning_match = re.search(r'"reasoning":\s*"([^"]*(?:\\.[^"]*)*)"', response_text, re.DOTALL)
-            reasoning = reasoning_match.group(1) if reasoning_match else "Layout design completed with AI optimization."
-            
-            # Store reasoning for frontend
-            if not hasattr(coordinate_solution, 'agent_reasoning'):
-                coordinate_solution.agent_reasoning = {}
-            coordinate_solution.agent_reasoning['layout_designer'] = reasoning
-            
-            logger.info(f"Gemini reasoning extracted: {reasoning[:100]}...")
-            
-            # Parse JSON response
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                layout_data = json.loads(json_str)
-                # Save successfully parsed JSON
-                self._save_debug_json(json_str, coord_id, "parsed_success")
-            else:
-                # Fallback parsing
-                layout_data = json.loads(response_text)
-                # Save fallback parsed JSON
-                self._save_debug_json(response_text, coord_id, "fallback_parsed")
-            
-            # Extract layout components
-            svg_content = layout_data.get('svg_content', self._create_fallback_svg(coordinate_solution))
-            style_tokens = layout_data.get('style_tokens', {})
-            layout_decisions = layout_data.get('layout_decisions', {})
-            
-            # Create labels from layout decisions
-            labels = []
-            if 'labels' in layout_decisions:
-                labels.append({
-                    "type": "layout_info",
-                    "content": layout_decisions['labels'],
-                    "position": "metadata"
-                })
-            
-            # Create layout plan
-            layout_plan = LayoutPlan(
-                svg=svg_content,
-                labels=labels,
-                style_tokens=style_tokens,
-                agent_reasoning={'layout_designer': reasoning}
-            )
-            
-            return layout_plan
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing failed: {e}")
-            
-            # Save failed JSON for debugging
-            self._save_debug_json(response_text, coord_id, "parse_failed")
-            
-            # Try to clean the JSON and parse again
+        max_retries = 3
+        coord_id = getattr(coordinate_solution, 'solution_id', 'layout_design')
+        
+        for attempt in range(max_retries):
             try:
-                # Remove control characters and fix common JSON issues
-                cleaned_response = self._clean_json_response(response_text)
-                layout_decisions = json.loads(cleaned_response)
+                logger.info(f"Designing layout (Attempt {attempt + 1}/{max_retries}) for {len(coordinate_solution.object_coordinates)} objects")
                 
-                # Save cleaned successful JSON
-                self._save_debug_json(cleaned_response, coord_id, "cleaned_success")
+                response = self.model.generate_content(layout_prompt)
+                response_text = response.text
                 
-                # Continue with cleaned JSON
-                svg_content = layout_decisions.get('svg_content', '')
+                # Save raw response for debugging
+                self._save_debug_json(response_text, coord_id, "raw_response")
+                
+                logger.info(f"Gemini layout design response: {len(response_text)} characters")
+                
+                # Extract reasoning for frontend display
+                reasoning_match = re.search(r'"reasoning":\s*"([^"]*(?:\\.[^"]*)*)"', response_text, re.DOTALL)
+                reasoning = reasoning_match.group(1) if reasoning_match else "Layout design completed with AI optimization."
+                
+                # Store reasoning for frontend
+                if not hasattr(coordinate_solution, 'agent_reasoning'):
+                    coordinate_solution.agent_reasoning = {}
+                coordinate_solution.agent_reasoning['layout_designer'] = reasoning
+                
+                logger.info(f"Gemini reasoning extracted: {reasoning[:100]}...")
+                
+                # Parse JSON response
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                    layout_data = json.loads(json_str)
+                    # Save successfully parsed JSON
+                    self._save_debug_json(json_str, coord_id, "parsed_success")
+                else:
+                    # Fallback parsing
+                    layout_data = json.loads(response_text)
+                    # Save fallback parsed JSON
+                    self._save_debug_json(response_text, coord_id, "fallback_parsed")
+                
+                # Extract layout components
+                svg_content = layout_data.get('svg_content', '')
+                style_tokens = layout_data.get('style_tokens', {})
+                layout_decisions = layout_data.get('layout_decisions', {})
+                
+                # Create labels from layout decisions
                 labels = []
-                style_tokens = layout_decisions.get('style_tokens', {})
+                if 'labels' in layout_decisions:
+                    labels.append({
+                        "type": "layout_info",
+                        "content": layout_decisions['labels'],
+                        "position": "metadata"
+                    })
                 
-                if svg_content:
-                    logger.info("Successfully parsed cleaned JSON response")
-                    layout_plan = LayoutPlan(
-                        svg=svg_content,
-                        labels=labels,
-                        style_tokens=style_tokens,
-                        agent_reasoning={'layout_designer': reasoning}
-                    )
-                    return layout_plan
+                # Create layout plan and return (success!)
+                layout_plan = LayoutPlan(
+                    svg=svg_content,
+                    labels=labels,
+                    style_tokens=style_tokens,
+                    agent_reasoning={'layout_designer': reasoning}
+                )
+                
+                return layout_plan
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"Attempt {attempt + 1} JSON parsing failed: {e}")
+                
+                # Save failed JSON for debugging
+                self._save_debug_json(response_text, coord_id, "parse_failed")
+                
+                # Try to clean the JSON and parse again
+                try:
+                    cleaned_response = self._clean_json_response(response_text)
+                    layout_data = json.loads(cleaned_response)
                     
-            except Exception as cleanup_error:
-                logger.warning(f"JSON cleanup also failed: {cleanup_error}")
-                # Save final failed attempt
-                self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
-                                    coord_id, "cleanup_failed")
-            
-            return self._create_fallback_layout(coordinate_solution)
-            
-        except Exception as e:
-            logger.error(f"Gemini layout design failed: {e}")
-            return self._create_fallback_layout(coordinate_solution)
+                    # Save cleaned successful JSON
+                    self._save_debug_json(cleaned_response, coord_id, "cleaned_success")
+                    
+                    # Continue with cleaned JSON
+                    svg_content = layout_data.get('svg_content', '')
+                    labels = []
+                    style_tokens = layout_data.get('style_tokens', {})
+                    
+                    if svg_content:
+                        logger.info("Successfully parsed cleaned JSON response")
+                        layout_plan = LayoutPlan(
+                            svg=svg_content,
+                            labels=labels,
+                            style_tokens=style_tokens,
+                            agent_reasoning={'layout_designer': reasoning}
+                        )
+                        return layout_plan
+                        
+                except Exception as cleanup_error:
+                    logger.warning(f"JSON cleanup also failed: {cleanup_error}")
+                    # Save final failed attempt
+                    self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
+                                        coord_id, "cleanup_failed")
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(f"Layout Designer failed after {max_retries} attempts")
+                    return AgentError(
+                        error="LAYOUT_GENERATION_FAILED",
+                        message="The AI failed to generate a valid SVG layout after multiple attempts. The mathematical solution was correct, but the drawing could not be created.",
+                        details={"agent": "layout_designer", "final_error": str(e)}
+                    )
+                    
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed with general error: {e}")
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(f"Layout Designer failed after {max_retries} attempts")
+                    return AgentError(
+                        error="LAYOUT_GENERATION_FAILED", 
+                        message="The AI failed to generate a valid SVG layout after multiple attempts. The mathematical solution was correct, but the drawing could not be created.",
+                        details={"agent": "layout_designer", "final_error": str(e)}
+                    )
+        
+        # This should not be reached, but as a safeguard
+        return AgentError(
+            error="LAYOUT_DESIGN_FAILED", 
+            message="Unknown error in retry loop.",
+            details={"agent": "layout_designer"}
+        )
 
     def _clean_json_response(self, response_text: str) -> str:
         """Enhanced JSON response cleaning with specialized fixes for common AI response issues."""

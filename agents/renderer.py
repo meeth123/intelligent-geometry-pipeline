@@ -10,7 +10,7 @@ import json
 import re
 import tempfile
 import base64
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Union
 import google.generativeai as genai
 from datetime import datetime
 
@@ -111,8 +111,8 @@ class Renderer:
                 details={"agent": "renderer", "error": str(e)}
             )
 
-    def _render_with_ai(self, layout_plan: LayoutPlan) -> RenderSet:
-        """Use Gemini 2.5 Pro to optimize and enhance the rendered output."""
+    def _render_with_ai(self, layout_plan: LayoutPlan) -> Union[RenderSet, AgentError]:
+        """Use Gemini 2.5 Pro to optimize and enhance the rendered output with retry mechanism."""
         
         # Prepare layout data for AI analysis
         render_prompt = f"""
@@ -152,103 +152,135 @@ RESPONSE FORMAT:
 ```
 
 Focus on creating a professional, publication-ready geometric diagram.
+
+IMPORTANT: Your entire response must be ONLY the JSON object. Do not include any text, notes, or markdown formatting like ```json before or after the JSON structure.
 """
         
-        try:
-            logger.info(f"Optimizing SVG rendering with AI")
-            
-            response = self.model.generate_content(render_prompt)
-            response_text = response.text
-            
-            # Save raw response for debugging
-            layout_id = getattr(layout_plan, 'layout_id', 'rendering')
-            self._save_debug_json(response_text, layout_id, "raw_response")
-            
-            logger.info(f"Gemini rendering response: {len(response_text)} characters")
-            
-            # Extract reasoning for frontend display
-            reasoning_match = re.search(r'"reasoning":\s*"([^"]*(?:\\.[^"]*)*)"', response_text, re.DOTALL)
-            reasoning = reasoning_match.group(1) if reasoning_match else "Rendering optimization completed with AI enhancements."
-            
-            # Store reasoning (attach to layout_plan for pipeline tracking)
-            if not hasattr(layout_plan, 'agent_reasoning'):
-                layout_plan.agent_reasoning = {}
-            layout_plan.agent_reasoning['renderer'] = reasoning
-            
-            logger.info(f"Gemini reasoning extracted: {reasoning[:100]}...")
-            
-            # Parse JSON response
-            json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
-            if json_match:
-                json_str = json_match.group(1)
-                render_data = json.loads(json_str)
-                # Save successfully parsed JSON
-                self._save_debug_json(json_str, layout_id, "parsed_success")
-            else:
-                # Fallback parsing
-                render_data = json.loads(response_text)
-                # Save fallback parsed JSON
-                self._save_debug_json(response_text, layout_id, "fallback_parsed")
-            
-            # Extract optimized SVG
-            optimized_svg = render_data.get('optimized_svg', layout_plan.svg)
-            rendering_decisions = render_data.get('rendering_decisions', {})
-            metadata = render_data.get('metadata', {})
-            
-            # Save SVG to temporary file
-            svg_file = self._save_svg_file(optimized_svg)
-            
-            # Create render set
-            render_set = RenderSet(
-                render_svg=optimized_svg,
-                render_svg_uri=svg_file,
-                render_png=None,  # PNG generation would require additional tools
-                render_png_uri=None
-            )
-            
-            # Add rendering metadata
-            render_set.rendering_decisions = rendering_decisions
-            render_set.metadata = metadata
-            render_set.agent_reasoning = getattr(layout_plan, 'agent_reasoning', {})
-            
-            return render_set
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing failed: {e}")
-            
-            # Save failed JSON for debugging
-            self._save_debug_json(response_text, layout_id, "parse_failed")
-            
-            # Try to clean the JSON and parse again
+        max_retries = 3
+        layout_id = getattr(layout_plan, 'layout_id', 'rendering')
+        
+        for attempt in range(max_retries):
             try:
-                cleaned_response = self._clean_json_response(response_text)
-                render_decisions = json.loads(cleaned_response)
+                logger.info(f"Optimizing SVG rendering with AI (Attempt {attempt + 1}/{max_retries})")
                 
-                # Save cleaned successful JSON
-                self._save_debug_json(cleaned_response, layout_id, "cleaned_success")
+                response = self.model.generate_content(render_prompt)
+                response_text = response.text
                 
-                # Continue with cleaned JSON
-                final_svg = render_decisions.get('optimized_svg', '')
-                if final_svg:
-                    logger.info("Successfully parsed cleaned JSON response")
-                    return RenderSet(
-                        render_svg=final_svg,
-                        rendering_decisions=render_decisions.get('optimization_decisions', {}),
-                        metadata=render_decisions.get('metadata', {}),
-                        agent_reasoning={'renderer': reasoning}
+                # Save raw response for debugging
+                self._save_debug_json(response_text, layout_id, "raw_response")
+                
+                logger.info(f"Gemini rendering response: {len(response_text)} characters")
+                
+                # Extract reasoning for frontend display
+                reasoning_match = re.search(r'"reasoning":\s*"([^"]*(?:\\.[^"]*)*)"', response_text, re.DOTALL)
+                reasoning = reasoning_match.group(1) if reasoning_match else "Rendering optimization completed with AI enhancements."
+                
+                # Store reasoning (attach to layout_plan for pipeline tracking)
+                if not hasattr(layout_plan, 'agent_reasoning'):
+                    layout_plan.agent_reasoning = {}
+                layout_plan.agent_reasoning['renderer'] = reasoning
+                
+                logger.info(f"Gemini reasoning extracted: {reasoning[:100]}...")
+                
+                # Parse JSON response
+                json_match = re.search(r'```json\s*(\{.*?\})\s*```', response_text, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                    render_data = json.loads(json_str)
+                    # Save successfully parsed JSON
+                    self._save_debug_json(json_str, layout_id, "parsed_success")
+                else:
+                    # Fallback parsing
+                    render_data = json.loads(response_text)
+                    # Save fallback parsed JSON
+                    self._save_debug_json(response_text, layout_id, "fallback_parsed")
+                
+                # Extract optimized SVG
+                optimized_svg = render_data.get('optimized_svg', layout_plan.svg)
+                rendering_decisions = render_data.get('rendering_decisions', {})
+                metadata = render_data.get('metadata', {})
+                
+                # Save SVG to temporary file
+                svg_file = self._save_svg_file(optimized_svg)
+                
+                # Create render set and return (success!)
+                render_set = RenderSet(
+                    render_svg=optimized_svg,
+                    render_svg_uri=svg_file,
+                    render_png=None,  # PNG generation would require additional tools
+                    render_png_uri=None
+                )
+                
+                # Add rendering metadata
+                render_set.rendering_decisions = rendering_decisions
+                render_set.metadata = metadata
+                render_set.agent_reasoning = getattr(layout_plan, 'agent_reasoning', {})
+                
+                return render_set
+                
+            except json.JSONDecodeError as e:
+                logger.warning(f"Attempt {attempt + 1} JSON parsing failed: {e}")
+                
+                # Save failed JSON for debugging
+                self._save_debug_json(response_text, layout_id, "parse_failed")
+                
+                # Try to clean the JSON and parse again
+                try:
+                    cleaned_response = self._clean_json_response(response_text)
+                    render_data = json.loads(cleaned_response)
+                    
+                    # Save cleaned successful JSON
+                    self._save_debug_json(cleaned_response, layout_id, "cleaned_success")
+                    
+                    # Continue with cleaned JSON
+                    optimized_svg = render_data.get('optimized_svg', '')
+                    if optimized_svg:
+                        logger.info("Successfully parsed cleaned JSON response")
+                        svg_file = self._save_svg_file(optimized_svg)
+                        render_set = RenderSet(
+                            render_svg=optimized_svg,
+                            render_svg_uri=svg_file,
+                            render_png=None,
+                            render_png_uri=None
+                        )
+                        render_set.rendering_decisions = render_data.get('rendering_decisions', {})
+                        render_set.metadata = render_data.get('metadata', {})
+                        render_set.agent_reasoning = {'renderer': reasoning}
+                        return render_set
+                        
+                except Exception as cleanup_error:
+                    logger.warning(f"JSON cleanup also failed: {cleanup_error}")
+                    # Save final failed attempt
+                    self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
+                                        layout_id, "cleanup_failed")
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(f"Renderer failed after {max_retries} attempts")
+                    return AgentError(
+                        error="RENDER_GENERATION_FAILED",
+                        message="The AI failed to generate a valid optimized SVG after multiple attempts. The layout was correct, but the final rendering could not be created.",
+                        details={"agent": "renderer", "final_error": str(e)}
                     )
                     
-            except Exception as cleanup_error:
-                logger.warning(f"JSON cleanup also failed: {cleanup_error}")
-                # Save final failed attempt
-                self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
-                                    layout_id, "cleanup_failed")
-            
-            return self._create_fallback_render(layout_plan)
-            
-        except Exception as e:
-            logger.error(f"Gemini rendering failed: {e}")
-            return self._create_fallback_render(layout_plan)
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed with general error: {e}")
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(f"Renderer failed after {max_retries} attempts")
+                    return AgentError(
+                        error="RENDER_GENERATION_FAILED",
+                        message="The AI failed to generate a valid optimized SVG after multiple attempts. The layout was correct, but the final rendering could not be created.",
+                        details={"agent": "renderer", "final_error": str(e)}
+                    )
+        
+        # This should not be reached, but as a safeguard
+        return AgentError(
+            error="RENDER_GENERATION_FAILED",
+            message="Unknown error in retry loop.",
+            details={"agent": "renderer"}
+        )
 
     def _clean_json_response(self, response_text: str) -> str:
         """Enhanced JSON response cleaning with specialized fixes for common AI response issues."""

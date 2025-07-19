@@ -96,28 +96,54 @@ class GeminiSymbolicGeometryPlanner:
             constraints_info.append(constraint_info)
         
         system_prompt = f"""
-You are an expert mathematical constraint solver specializing in computational geometry.
+You are an expert mathematical constraint solver AND intelligent geometric designer specializing in computational geometry.
 
-THINK STEP BY STEP through this constraint solving problem:
+Your DUAL ROLE:
+1. Make INTELLIGENT ASSUMPTIONS for incomplete specifications
+2. Solve mathematical constraints with precision
 
-1. ANALYZE the geometric objects and their properties:
+STEP 1: INTELLIGENT ASSUMPTION-MAKING
+Analyze the geometry specification and identify missing information:
+
+OBJECTS (may have incomplete properties):
 {json.dumps(objects_info, indent=2)}
 
-2. ANALYZE the constraints between objects:
+CONSTRAINTS (relationships to satisfy):
 {json.dumps(constraints_info, indent=2)}
 
-3. MATHEMATICAL REASONING:
-   - Set up a coordinate system (0,0 at center, positive x right, positive y up)
-   - For each constraint, write the mathematical equations
-   - Solve the system of equations to find exact coordinates
-   - Calculate all derived properties (areas, perimeters, angles)
+For ANY missing dimensions or unspecified properties, make GEOMETRICALLY INTELLIGENT assumptions:
 
-4. CONSTRAINT-SPECIFIC FORMULAS:
-   - INSCRIBED square in circle: diagonal = diameter, side = diameter/√2
-   - TANGENT: distance from center to tangent line = radius
-   - PARALLEL: same slope or perpendicular slopes differ by π/2
-   - PERPENDICULAR: dot product of direction vectors = 0
-   - EQUAL: same dimensions/properties
+ASSUMPTION PRINCIPLES:
+- **Circles**: Default radius ~5-10 units for good visibility
+- **Triangles**: Choose type for best constraint satisfaction:
+  * For inscribed circle: Use triangle with integer coordinates for clarity
+  * For angle bisectors: Isosceles or equilateral for symmetry
+  * Default side length ~10 units
+- **Squares/Rectangles**: Default side ~8-10 units for proportion
+- **Lines**: Default length ~12 units or as needed for constraints
+- **Positioning**: Center constructions at origin for symmetry
+- **Optimization**: Choose proportions that create clear, non-overlapping visualization
+
+GEOMETRIC INTELLIGENCE:
+- Inscribed circle in triangle: Choose triangle dimensions that produce nice radius values
+- Angle bisectors: Use symmetric triangles where bisectors have elegant coordinates  
+- Multiple shapes: Scale appropriately so all shapes are clearly visible
+- Complex constructions: Optimize for educational clarity and mathematical elegance
+
+STEP 2: MATHEMATICAL CONSTRAINT SOLVING
+After making intelligent assumptions, solve constraints precisely:
+
+1. Set up coordinate system (0,0 at center, +x right, +y up)
+2. Apply geometric formulas for each constraint
+3. Solve system of equations for exact coordinates
+4. Calculate all derived properties
+
+CONSTRAINT FORMULAS:
+- INSCRIBED: inner shape vertices tangent to outer shape boundary
+- TANGENT: perpendicular distance = radius
+- ANGLE_BISECTOR: line from vertex through incenter
+- PARALLEL/PERPENDICULAR: slope relationships
+- EQUAL: matching dimensions/properties
    - DISTANCE: specific spacing between objects
 
 5. COORDINATE CALCULATION:
@@ -131,11 +157,19 @@ THINK STEP BY STEP through this constraint solving problem:
    - Check for mathematical consistency
    - Ensure realistic geometry (no overlapping unless intended)
 
-Return a JSON with the complete coordinate solution:
+Return a JSON with intelligent assumptions AND complete coordinate solution:
 {{
-    "reasoning": "Step-by-step mathematical derivation of the solution",
+    "reasoning": "Step-by-step process: assumptions made + mathematical derivation",
+    "assumptions_made": [
+        {{
+            "object_id": "object_id",
+            "missing_property": "radius|side_length|dimensions|type",
+            "assumed_value": "value_chosen",
+            "rationale": "why this value was chosen for optimal visualization/constraints"
+        }}
+    ],
     "coordinate_system": {{
-        "origin": "center",
+        "origin": "center", 
         "units": "cm",
         "x_axis": "right_positive",
         "y_axis": "up_positive"
@@ -188,36 +222,46 @@ CRITICAL MATHEMATICAL GUIDELINES:
 - Always verify your solution satisfies ALL constraints
 
 Focus on mathematical rigor and geometric precision.
+
+IMPORTANT: Your entire response must be ONLY the JSON object. Do not include any text, notes, or markdown formatting like ```json before or after the JSON structure.
 """
         
         return system_prompt
     
-    def call_gemini_for_constraint_solving(self, geometry_spec: GeometrySpec) -> Dict[str, Any]:
-        """Call Gemini to solve geometric constraints mathematically."""
+    def call_gemini_for_constraint_solving(self, geometry_spec: GeometrySpec) -> Union[Dict[str, Any], AgentError]:
+        """Call Gemini to solve geometric constraints mathematically with retry mechanism."""
         
         if not self.api_key:
-            return self.create_fallback_solution(geometry_spec)
-        
-        try:
-            prompt = self.create_constraint_solving_prompt(geometry_spec)
-            
-            response = self.model.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
-                    max_output_tokens=self.max_tokens,
-                    temperature=0.1,  # Low temperature for mathematical precision
-                )
+            return AgentError(
+                error="NO_API_KEY",
+                message="Google API key not available for constraint solving.",
+                details={"agent": "symbolic_geometry_planner"}
             )
-            
-            response_text = response.text
-            logger.info(f"Gemini constraint solving response: {len(response_text)} characters")
-            
-            # Save raw response for debugging
-            geom_id = getattr(geometry_spec, 'spec_id', 'constraint_solving')
-            self._save_debug_json(response_text, geom_id, "raw_response")
-            
-            # Try to extract JSON from the response
+        
+        max_retries = 3
+        geom_id = getattr(geometry_spec, 'spec_id', 'constraint_solving')
+        
+        for attempt in range(max_retries):
             try:
+                logger.info(f"Solving constraints (Attempt {attempt + 1}/{max_retries}) for {len(geometry_spec.objects)} objects with {len(geometry_spec.constraints)} constraints")
+                
+                prompt = self.create_constraint_solving_prompt(geometry_spec)
+                
+                response = self.model.generate_content(
+                    prompt,
+                    generation_config=genai.types.GenerationConfig(
+                        max_output_tokens=self.max_tokens,
+                        temperature=0.1,  # Low temperature for mathematical precision
+                    )
+                )
+                
+                response_text = response.text
+                logger.info(f"Gemini constraint solving response: {len(response_text)} characters")
+                
+                # Save raw response for debugging
+                self._save_debug_json(response_text, geom_id, "raw_response")
+                
+                # Try to extract JSON from the response
                 json_start = response_text.find('{')
                 json_end = response_text.rfind('}') + 1
                 
@@ -227,11 +271,15 @@ Focus on mathematical rigor and geometric precision.
                     
                     # Save successfully parsed JSON
                     self._save_debug_json(json_str, geom_id, "parsed_success")
+                    
+                    # Add debugging info and return success
+                    logger.info(f"Gemini reasoning extracted: {parsed_data.get('reasoning', 'No reasoning')[:100]}...")
+                    return parsed_data
                 else:
                     raise ValueError("No JSON found in response")
                     
             except (json.JSONDecodeError, ValueError) as e:
-                logger.error(f"Failed to parse Gemini constraint solving JSON: {e}")
+                logger.warning(f"Attempt {attempt + 1} JSON parsing failed: {e}")
                 
                 # Save failed JSON for debugging
                 self._save_debug_json(response_text, geom_id, "parse_failed")
@@ -245,6 +293,10 @@ Focus on mathematical rigor and geometric precision.
                     # Save cleaned successful JSON
                     self._save_debug_json(cleaned_response, geom_id, "cleaned_success")
                     
+                    # Add debugging info and return success
+                    logger.info(f"Gemini reasoning extracted: {parsed_data.get('reasoning', 'No reasoning')[:100]}...")
+                    return parsed_data
+                    
                 except Exception as cleanup_error:
                     logger.warning(f"JSON cleanup also failed: {cleanup_error}")
                     logger.error(f"Raw response: {response_text[:500]}...")
@@ -252,24 +304,34 @@ Focus on mathematical rigor and geometric precision.
                     # Save final failed attempt
                     self._save_debug_json(cleaned_response if 'cleaned_response' in locals() else response_text, 
                                         geom_id, "cleanup_failed")
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(f"Symbolic Geometry Planner failed after {max_retries} attempts")
+                    return AgentError(
+                        error="CONSTRAINT_SOLVING_FAILED",
+                        message="The AI failed to solve geometric constraints after multiple attempts. The geometry specification was valid, but coordinate solution could not be computed.",
+                        details={"agent": "symbolic_geometry_planner", "final_error": str(e)}
+                    )
                     
-                    # Create fallback with raw reasoning
-                    parsed_data = {
-                        "reasoning": f"Gemini provided mathematical reasoning but JSON parsing failed. Raw response: {response_text[:300]}...",
-                        "coordinate_system": {"origin": "center", "units": "cm"},
-                        "solved_objects": self.create_fallback_solution(geometry_spec)["solved_objects"],
-                        "constraint_verification": [],
-                        "solution_quality": {"all_constraints_satisfied": False, "confidence": 0.3}
-                    }
-            
-            # Add debugging info
-            logger.info(f"Gemini reasoning extracted: {parsed_data.get('reasoning', 'No reasoning')[:100]}...")
-            
-            return parsed_data
-            
-        except Exception as e:
-            logger.error(f"Gemini constraint solving failed: {e}")
-            return self.create_fallback_solution(geometry_spec)
+            except Exception as e:
+                logger.warning(f"Attempt {attempt + 1} failed with general error: {e}")
+                
+                # If this was the last attempt, return error
+                if attempt == max_retries - 1:
+                    logger.error(f"Symbolic Geometry Planner failed after {max_retries} attempts")
+                    return AgentError(
+                        error="CONSTRAINT_SOLVING_FAILED",
+                        message="The AI failed to solve geometric constraints after multiple attempts. The geometry specification was valid, but coordinate solution could not be computed.",
+                        details={"agent": "symbolic_geometry_planner", "final_error": str(e)}
+                    )
+        
+        # This should not be reached, but as a safeguard
+        return AgentError(
+            error="CONSTRAINT_SOLVING_FAILED",
+            message="Unknown error in retry loop.",
+            details={"agent": "symbolic_geometry_planner"}
+        )
     
     def _clean_json_response(self, response_text: str) -> str:
         """Clean JSON response by removing control characters and fixing common issues."""
@@ -496,6 +558,10 @@ def handle(geometry_spec: GeometrySpec) -> Union[CoordinateSolution, AgentError]
         
         # Solve constraints with Gemini
         gemini_response = _planner.call_gemini_for_constraint_solving(geometry_spec)
+        
+        # Check if constraint solving failed
+        if isinstance(gemini_response, AgentError):
+            return gemini_response
         
         # Convert to CoordinateSolution
         coordinate_solution = _planner.convert_to_coordinate_solution(gemini_response, geometry_spec)

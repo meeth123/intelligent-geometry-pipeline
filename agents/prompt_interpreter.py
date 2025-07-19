@@ -72,74 +72,68 @@ class GeminiPromptInterpreter:
             logger.warning(f"Failed to save debug JSON: {e}")
     
     def create_geometry_analysis_prompt(self, user_prompt: str) -> str:
-        """Create a structured prompt for Gemini geometric reasoning."""
+        """Create a structured prompt for Gemini intent extraction (NO assumptions)."""
         
         system_prompt = """
-You are an expert geometric analyst with deep mathematical reasoning capabilities. 
+You are an expert geometry teacher focused on understanding user INTENT without making assumptions.
 
-THINK STEP BY STEP through this geometric problem:
+Your job: Extract what the user wants WITHOUT making specific geometric assumptions or calculations.
 
-1. PARSE the user's prompt carefully
-   - What geometric objects are mentioned?
-   - What are the explicit dimensions and measurements?
-   - What spatial relationships are described?
+ANALYZE the user's prompt to identify:
 
-2. REASON about geometric constraints
-   - "fits inside" + "vertices lie on" = INSCRIBED polygon with vertices tangent to circle
-   - "circle of 10cm" typically means diameter=10cm, so radius=5cm
-   - "square inscribed in circle" means all 4 vertices touch the circle circumference
-   - Look for: parallel, perpendicular, equal, tangent, inscribed, circumscribed relationships
+1. GEOMETRIC OBJECTS mentioned (what shapes/objects are requested)
+2. EXPLICIT RELATIONSHIPS described (how objects relate to each other) 
+3. EXPLICIT MEASUREMENTS provided by user (preserve exactly as stated)
+4. AMBIGUITIES and missing information (what needs to be determined later)
 
-3. CALCULATE correct dimensions
-   - For inscribed square in circle: diagonal = diameter, side = diameter/√2
-   - Convert units consistently (cm, mm, pixels, etc.)
-   - Preserve the user's specified measurements
+DO NOT:
+- Make up specific dimensions if not provided
+- Calculate exact coordinates or measurements  
+- Assume specific triangle types (equilateral, isosceles, etc.)
+- Choose specific positioning or orientations
+- Make mathematical calculations or conversions
 
-4. STRUCTURE the output as JSON
+DO:
+- Identify the types of shapes mentioned
+- Extract explicitly stated relationships
+- Preserve user's exact measurements when given
+- Note what information is missing or ambiguous
 
 Return a JSON object with this structure:
 {
-    "reasoning": "Step-by-step analysis of the geometric problem",
+    "reasoning": "What the user wants and what information they provided vs. what's missing",
     "objects": [
         {
-            "type": "circle|triangle|square|rectangle|line|polygon|point",
+            "type": "circle|triangle|square|rectangle|line|polygon|point", 
             "properties": {
-                "radius": number (for circles),
-                "side_length": number (for squares/triangles),
-                "width": number (for rectangles),
-                "height": number (for rectangles), 
-                "length": number (for lines),
-                "center_x": number (optional, default 0),
-                "center_y": number (optional, default 0)
+                "user_specified_radius": number (ONLY if user provided),
+                "user_specified_side": number (ONLY if user provided),
+                "user_specified_width": number (ONLY if user provided),
+                "user_specified_height": number (ONLY if user provided),
+                "name": "descriptive name from user"
             }
         }
     ],
     "constraints": [
         {
-            "type": "inscribed|tangent|parallel|perpendicular|equal|centered|distance|intersects",
+            "type": "inscribed|tangent|parallel|perpendicular|equal|intersects|angle_bisector",
             "object_indices": [0, 1],
-            "description": "detailed explanation of the constraint",
+            "description": "relationship described by user",
             "parameters": {
-                "relationship": "specific geometric relationship"
+                "relationship": "user's description",
+                "incomplete": true/false
             }
         }
     ],
     "extracted_info": {
-        "dimensions": {"original_measurements": "as_specified_by_user"},
-        "angles": {...},
-        "style_hints": [...],
-        "geometric_intent": "high-level description of what user wants"
+        "explicit_measurements": {"measurements user actually provided"},
+        "missing_information": ["what needs to be determined by symbolic planner"],
+        "geometric_intent": "high-level description of what user wants to see",
+        "ambiguities": ["unclear aspects that need geometric reasoning"]
     }
 }
 
-CRITICAL: Pay special attention to geometric relationships like:
-- "vertices lie on circle" = tangent constraint between polygon vertices and circle
-- "fits inside" = inscribed constraint
-- "surrounds" = circumscribed constraint
-- "parallel lines" = parallel constraint
-- "right angles" = perpendicular constraint
-
-Be mathematically precise with dimensions and relationships.
+Focus on INTENT EXTRACTION, not assumption-making. Let the symbolic planner handle the mathematical reasoning.
 """
         
         return f"{system_prompt}\n\nUser prompt to analyze: \"{user_prompt}\""
@@ -233,42 +227,51 @@ Be mathematically precise with dimensions and relationships.
             return self.create_fallback_analysis(user_prompt)
     
     def create_fallback_analysis(self, user_prompt: str) -> Dict[str, Any]:
-        """Create a basic fallback analysis when AI is not available."""
+        """Create a basic fallback analysis when AI is not available - NO assumptions."""
         
-        # Simple keyword-based fallback
+        # Simple keyword-based fallback - only extract what's mentioned
         prompt_lower = user_prompt.lower()
         
         objects = []
         constraints = []
+        missing_info = []
         
-        # Basic shape detection
+        # Basic shape detection - NO default dimensions
         if "circle" in prompt_lower:
-            objects.append({"type": "circle", "properties": {"radius": 50}})
+            objects.append({"type": "circle", "properties": {"name": "circle"}})
+            missing_info.append("circle dimensions not specified")
         if "square" in prompt_lower:
-            objects.append({"type": "square", "properties": {"side_length": 100}})
+            objects.append({"type": "square", "properties": {"name": "square"}})
+            missing_info.append("square dimensions not specified")
         if "triangle" in prompt_lower:
-            objects.append({"type": "triangle", "properties": {"side_length": 100}})
+            objects.append({"type": "triangle", "properties": {"name": "triangle"}})
+            missing_info.append("triangle type and dimensions not specified")
         if "line" in prompt_lower:
-            objects.append({"type": "line", "properties": {"length": 100}})
+            objects.append({"type": "line", "properties": {"name": "line"}})
+            missing_info.append("line length not specified")
         
-        # Basic constraint detection
+        # Basic constraint detection - identify relationships only
         if any(word in prompt_lower for word in ["inside", "inscribed", "fits"]):
             if len(objects) >= 2:
                 constraints.append({
                     "type": "inscribed",
                     "object_indices": [0, 1],
-                    "description": "One shape inside another",
-                    "parameters": {"relationship": "inside"}
+                    "description": "One shape inside another (relationship needs mathematical definition)",
+                    "parameters": {"relationship": "inscribed", "incomplete": True}
                 })
         
+        if any(word in prompt_lower for word in ["bisector", "bisect"]):
+            missing_info.append("angle bisector relationships need geometric calculation")
+        
         return {
-            "reasoning": f"Fallback analysis used due to missing API key. Detected {len(objects)} objects and {len(constraints)} constraints using rule-based pattern matching.",
+            "reasoning": f"Fallback analysis: Identified {len(objects)} objects and {len(constraints)} relationships. All specific dimensions and positioning need to be determined by symbolic planner.",
             "objects": objects,
             "constraints": constraints,
             "extracted_info": {
-                "dimensions": {},
-                "angles": {},
-                "style_hints": []
+                "explicit_measurements": {},
+                "missing_information": missing_info,
+                "geometric_intent": "Create geometric construction based on identified objects and relationships",
+                "ambiguities": ["All dimensions and positioning unspecified"]
             }
         }
     
@@ -529,7 +532,48 @@ def _clean_json_response(response_text: str) -> str:
     
     cleaned = fix_corrupted_closing_tags(cleaned)
     
-    # Stage 4: Fix structural completeness issues
+    # Stage 4: Mathematical Expression Evaluation (Issue #4) 
+    # Convert JavaScript-style mathematical expressions to literal numbers
+    def evaluate_math_expressions(text):
+        import math
+        import re
+        
+        # Find mathematical expressions in JSON values
+        # Pattern: "field": expression, or "field": expression}
+        math_patterns = [
+            # Handle Math.sqrt() calls first
+            (r'Math\.sqrt\((\d+(?:\.\d+)?)\)', lambda m: str(math.sqrt(float(m.group(1))))),
+            # Handle complex arithmetic with sqrt: 40 / (5 + Math.sqrt(89))
+            (r'(\d+(?:\.\d+)?)\s*/\s*\(\s*(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)\s*\)', 
+             lambda m: str(float(m.group(1)) / (float(m.group(2)) + float(m.group(3))))),
+            # Handle simple division: num / num  
+            (r'(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)', 
+             lambda m: str(float(m.group(1)) / float(m.group(2)))),
+            # Handle simple addition: num + num
+            (r'(\d+(?:\.\d+)?)\s*\+\s*(\d+(?:\.\d+)?)', 
+             lambda m: str(float(m.group(1)) + float(m.group(2)))),
+            # Handle simple subtraction: num - num
+            (r'(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)', 
+             lambda m: str(float(m.group(1)) - float(m.group(2)))),
+        ]
+        
+        # Apply mathematical expression patterns iteratively
+        max_iterations = 5  # Prevent infinite loops
+        for iteration in range(max_iterations):
+            original_text = text
+            
+            for pattern, replacement in math_patterns:
+                text = re.sub(pattern, replacement, text)
+            
+            # If no changes made, we're done
+            if text == original_text:
+                break
+        
+        return text
+    
+    cleaned = evaluate_math_expressions(cleaned)
+
+    # Stage 5: Fix structural completeness issues
     # Check for incomplete JSON structures and complete them
     open_braces = cleaned.count('{')
     close_braces = cleaned.count('}')
@@ -562,12 +606,12 @@ def _clean_json_response(response_text: str) -> str:
     if quote_count % 2 == 1:
         cleaned += '"'
     
-    # Stage 5: Test if fixes worked
+    # Stage 6: Test if fixes worked
     try:
         json.loads(cleaned)
         return cleaned.strip()
     except:
-        # Stage 5: More aggressive cleaning for complex cases
+        # Stage 7: More aggressive cleaning for complex cases
         
         # Extract just the JSON object structure
         json_match = re.search(r'\{.*\}', cleaned, re.DOTALL)

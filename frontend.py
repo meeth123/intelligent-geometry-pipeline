@@ -339,23 +339,36 @@ def main():
     if process_button and user_prompt.strip():
         # Initialize visual pipeline
         visualizer = get_visualizer()
+        visualizer.reset_pipeline()  # Reset timing from previous runs
         
         # Create placeholders for real-time updates
         st.markdown("---")
-        pipeline_container = st.container()
-        logs_container = st.container()
         
-        with pipeline_container:
-            visualizer.display_pipeline_visual()
-        
-        with logs_container:
-            col1, col2 = st.columns(2)
-            with col1:
-                visualizer.display_server_logs()
-            with col2:
-                visualizer.display_agent_handoff_sequence()
+        # Create empty placeholders that will be updated in real-time
+        pipeline_placeholder = st.empty()
+        logs_placeholder = st.empty() 
+        timing_placeholder = st.empty()
         
         st.markdown("---")
+        
+        # Function to update displays in real-time
+        def update_displays():
+            """Update all visual displays with current status"""
+            with pipeline_placeholder.container():
+                visualizer.display_pipeline_visual()
+            
+            with logs_placeholder.container():
+                col1, col2 = st.columns(2)
+                with col1:
+                    visualizer.display_server_logs()
+                with col2:
+                    visualizer.display_agent_handoff_sequence()
+            
+            with timing_placeholder.container():
+                visualizer.display_timing_summary()
+        
+        # Initial display
+        update_displays()
         
         with st.spinner("🧠 Gemini AI agents are thinking..."):
             try:
@@ -378,9 +391,11 @@ def main():
                     prompt_bundle.images = [image_uri]
                     st.info(f"📸 Image uploaded: {uploaded_file.name} - Will be processed by Image Preprocessor and Vision Interpreter")
                 
-                # Process with orchestrator - use full pipeline
+                # Process with orchestrator - use full pipeline with real-time updates
                 from agents.orchestrator import _orchestrator
-                result = _orchestrator.process_full_pipeline(prompt_bundle)
+                
+                # Process pipeline with callback for real-time updates
+                result = _orchestrator.process_full_pipeline(prompt_bundle, update_callback=update_displays)
                 
                 # Clean up temp file
                 if image_uri and os.path.exists(image_uri):

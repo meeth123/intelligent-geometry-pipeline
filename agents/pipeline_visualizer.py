@@ -120,6 +120,7 @@ class PipelineVisualizer:
         """Update an agent's status"""
         if agent_name in self.agents:
             agent = self.agents[agent_name]
+            old_state = agent.state
             agent.state = state
             if thinking_message:
                 agent.thinking_message = thinking_message
@@ -128,11 +129,17 @@ class PipelineVisualizer:
             if reasoning:
                 agent.reasoning = reasoning
             
-            # Update timestamps
-            if state == AgentState.THINKING and agent.start_time is None:
-                agent.start_time = datetime.now()
-            elif state == AgentState.COMPLETE and agent.end_time is None:
-                agent.end_time = datetime.now()
+            # Update timestamps with better tracking
+            current_time = datetime.now()
+            
+            if state == AgentState.THINKING and old_state == AgentState.WAITING:
+                agent.start_time = current_time
+                agent.end_time = None  # Reset end time
+            elif state == AgentState.PROCESSING and agent.start_time is None:
+                agent.start_time = current_time
+                agent.end_time = None
+            elif state in [AgentState.COMPLETE, AgentState.ERROR] and agent.end_time is None:
+                agent.end_time = current_time
     
     def get_pipeline_progress(self) -> float:
         """Get overall pipeline progress"""
@@ -147,6 +154,66 @@ class PipelineVisualizer:
                 return agent_name
         return None
     
+    def get_agent_elapsed_time(self, agent_name: str) -> float:
+        """Get elapsed time for an agent in seconds"""
+        if agent_name not in self.agents:
+            return 0.0
+        
+        agent = self.agents[agent_name]
+        if agent.start_time is None:
+            return 0.0
+        
+        end_time = agent.end_time or datetime.now()
+        return (end_time - agent.start_time).total_seconds()
+    
+    def get_total_pipeline_time(self) -> float:
+        """Get total pipeline elapsed time in seconds"""
+        start_times = [agent.start_time for agent in self.agents.values() if agent.start_time]
+        end_times = [agent.end_time for agent in self.agents.values() if agent.end_time]
+        
+        if not start_times:
+            return 0.0
+        
+        earliest_start = min(start_times)
+        latest_end = max(end_times) if end_times else datetime.now()
+        
+        return (latest_end - earliest_start).total_seconds()
+    
+    def get_timing_summary(self) -> dict:
+        """Get comprehensive timing summary"""
+        summary = {
+            'total_time': self.get_total_pipeline_time(),
+            'agents': {},
+            'completed_agents': 0,
+            'active_agent': self.get_current_active_agent()
+        }
+        
+        for agent_name, agent in self.agents.items():
+            elapsed_time = self.get_agent_elapsed_time(agent_name)
+            summary['agents'][agent_name] = {
+                'name': agent.name,
+                'icon': agent.icon,
+                'state': agent.state,
+                'elapsed_time': elapsed_time,
+                'is_complete': agent.state == AgentState.COMPLETE,
+                'model': agent.model
+            }
+            
+            if agent.state == AgentState.COMPLETE:
+                summary['completed_agents'] += 1
+        
+        return summary
+    
+    def reset_pipeline(self):
+        """Reset all agents to waiting state and clear timing"""
+        for agent in self.agents.values():
+            agent.state = AgentState.WAITING
+            agent.thinking_message = agent.thinking_message.split("Ready to")[0] + "Ready to " + agent.thinking_message.split("Ready to")[1] if "Ready to" in agent.thinking_message else "Ready..."
+            agent.progress = 0.0
+            agent.start_time = None
+            agent.end_time = None
+            agent.reasoning = ""
+    
     def display_pipeline_visual(self):
         """Display the visual pipeline in Streamlit"""
         st.markdown("## 🚀 Real-Time Pipeline Visualization")
@@ -155,11 +222,12 @@ class PipelineVisualizer:
         overall_progress = self.get_pipeline_progress()
         st.progress(overall_progress, text=f"Pipeline Progress: {overall_progress:.1%}")
         
-        # Current active agent
+        # Current active agent with real-time timing
         active_agent = self.get_current_active_agent()
         if active_agent:
             agent = self.agents[active_agent]
-            st.info(f"🔥 **Active**: {agent.icon} {agent.name} - {agent.thinking_message}")
+            elapsed_time = self.get_agent_elapsed_time(active_agent)
+            st.info(f"🔥 **Active**: {agent.icon} {agent.name} - {agent.thinking_message} ⏱️ {elapsed_time:.1f}s")
         
         # Agent grid display
         cols = st.columns(4)
@@ -192,10 +260,16 @@ class PipelineVisualizer:
                 if agent.progress > 0:
                     st.progress(agent.progress, text=f"{agent.progress:.0%}")
                 
-                # Timing info
-                if agent.start_time and agent.end_time:
-                    duration = (agent.end_time - agent.start_time).total_seconds()
-                    st.caption(f"⏱️ {duration:.1f}s")
+                # Enhanced timing info
+                elapsed_time = self.get_agent_elapsed_time(agent_name)
+                if agent.state == AgentState.COMPLETE and elapsed_time > 0:
+                    st.success(f"⏱️ Completed in {elapsed_time:.1f}s")
+                elif agent.state in [AgentState.THINKING, AgentState.PROCESSING] and elapsed_time > 0:
+                    st.info(f"⏱️ Running: {elapsed_time:.1f}s")
+                elif agent.state == AgentState.ERROR and elapsed_time > 0:
+                    st.error(f"⏱️ Failed after {elapsed_time:.1f}s")
+                elif agent.state == AgentState.WAITING:
+                    st.caption("⏳ Ready to start")
     
     def _get_status_color(self, state: AgentState) -> str:
         """Get color for agent state"""
@@ -242,20 +316,156 @@ class PipelineVisualizer:
                 
                 if agent.state != AgentState.WAITING:
                     timestamp = datetime.now().strftime("%H:%M:%S")
+                    elapsed_time = self.get_agent_elapsed_time(agent_name)
                     
                     if agent.state == AgentState.THINKING:
-                        st.code(f"[{timestamp}] 🧠 {agent.name}: {agent.thinking_message}")
+                        st.code(f"[{timestamp}] 🧠 {agent.name}: {agent.thinking_message} | ⏱️ {elapsed_time:.1f}s")
                     elif agent.state == AgentState.PROCESSING:
-                        st.code(f"[{timestamp}] ⚡ {agent.name}: Processing with {agent.model}...")
+                        st.code(f"[{timestamp}] ⚡ {agent.name}: Processing with {agent.model}... | ⏱️ {elapsed_time:.1f}s")
                     elif agent.state == AgentState.COMPLETE:
-                        st.code(f"[{timestamp}] ✅ {agent.name}: Complete! Handing off to next agent...")
+                        st.code(f"[{timestamp}] ✅ {agent.name}: Complete! Handing off to next agent... | ⏱️ {elapsed_time:.1f}s")
                     elif agent.state == AgentState.ERROR:
-                        st.code(f"[{timestamp}] ❌ {agent.name}: Error encountered")
+                        st.code(f"[{timestamp}] ❌ {agent.name}: Error encountered | ⏱️ {elapsed_time:.1f}s")
                     
                     # Show reasoning if available
                     if agent.reasoning and len(agent.reasoning) > 0:
                         with st.expander(f"🧠 {agent.name} Detailed Reasoning"):
                             st.write(agent.reasoning[:500] + "..." if len(agent.reasoning) > 500 else agent.reasoning)
+    
+    def display_timing_summary(self):
+        """Display comprehensive timing summary"""
+        st.markdown("### ⏱️ Performance Analytics")
+        
+        timing_summary = self.get_timing_summary()
+        
+        # Overall metrics
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            total_time = timing_summary['total_time']
+            st.metric(
+                label="🕐 Total Pipeline Time",
+                value=f"{total_time:.1f}s" if total_time > 0 else "Not started",
+                delta=None
+            )
+        
+        with col2:
+            completed = timing_summary['completed_agents']
+            total_agents = len(self.agents)
+            st.metric(
+                label="✅ Completed Agents", 
+                value=f"{completed}/{total_agents}",
+                delta=f"{(completed/total_agents*100):.0f}%" if total_agents > 0 else "0%"
+            )
+        
+        with col3:
+            active_agent = timing_summary['active_agent']
+            if active_agent:
+                active_time = timing_summary['agents'][active_agent]['elapsed_time']
+                agent_name = timing_summary['agents'][active_agent]['name']
+                st.metric(
+                    label="🔥 Active Agent Time",
+                    value=f"{active_time:.1f}s",
+                    delta=f"{agent_name}"
+                )
+            else:
+                st.metric(
+                    label="🔥 Active Agent Time",
+                    value="None active",
+                    delta=None
+                )
+        
+        # Individual agent performance table
+        st.markdown("#### 📊 Individual Agent Performance")
+        
+        agent_data = []
+        for agent_name in self.pipeline_sequence:
+            agent_info = timing_summary['agents'][agent_name]
+            
+            # Status emoji
+            if agent_info['state'] == AgentState.COMPLETE:
+                status_emoji = "✅"
+            elif agent_info['state'] in [AgentState.THINKING, AgentState.PROCESSING]:
+                status_emoji = "🔄"
+            elif agent_info['state'] == AgentState.ERROR:
+                status_emoji = "❌"
+            else:
+                status_emoji = "⏳"
+            
+            agent_data.append({
+                "Agent": f"{agent_info['icon']} {agent_info['name']}",
+                "Status": f"{status_emoji} {agent_info['state'].value}",
+                "Model": agent_info['model'],
+                "Time": f"{agent_info['elapsed_time']:.1f}s" if agent_info['elapsed_time'] > 0 else "-",
+                "Performance": self._get_performance_rating(agent_info['elapsed_time'], agent_info['model'])
+            })
+        
+        if agent_data:
+            st.table(agent_data)
+        
+        # Performance insights
+        if timing_summary['completed_agents'] > 0:
+            self._display_performance_insights(timing_summary)
+    
+    def _get_performance_rating(self, elapsed_time: float, model: str) -> str:
+        """Get performance rating based on elapsed time and model"""
+        if elapsed_time <= 0:
+            return "⏳ Pending"
+        elif elapsed_time < 3:
+            return "🚀 Fast"
+        elif elapsed_time < 8:
+            return "⚡ Good"
+        elif elapsed_time < 15:
+            return "🐌 Slow"
+        else:
+            return "🕐 Very Slow"
+    
+    def _display_performance_insights(self, timing_summary: dict):
+        """Display performance insights and recommendations"""
+        st.markdown("#### 💡 Performance Insights")
+        
+        insights = []
+        
+        # Total time analysis
+        total_time = timing_summary['total_time']
+        if total_time > 30:
+            insights.append("🐌 Pipeline taking longer than expected. Consider optimizing prompts or using faster models.")
+        elif total_time < 10:
+            insights.append("🚀 Excellent pipeline performance! Your agents are working efficiently.")
+        
+        # Model performance comparison
+        pro_agents = []
+        flash_agents = []
+        
+        for agent_name, agent_info in timing_summary['agents'].items():
+            if agent_info['is_complete']:
+                if "Pro" in agent_info['model']:
+                    pro_agents.append(agent_info['elapsed_time'])
+                elif "Flash" in agent_info['model']:
+                    flash_agents.append(agent_info['elapsed_time'])
+        
+        if pro_agents and flash_agents:
+            avg_pro = sum(pro_agents) / len(pro_agents)
+            avg_flash = sum(flash_agents) / len(flash_agents)
+            
+            if avg_pro > avg_flash * 2:
+                insights.append(f"⚡ Flash agents ({avg_flash:.1f}s avg) are significantly faster than Pro agents ({avg_pro:.1f}s avg)")
+            elif avg_pro < avg_flash:
+                insights.append(f"🤔 Pro agents ({avg_pro:.1f}s avg) are faster than Flash agents ({avg_flash:.1f}s avg) - unusual!")
+        
+        # Slowest agent
+        completed_agents = [(name, info) for name, info in timing_summary['agents'].items() if info['is_complete']]
+        if completed_agents:
+            slowest_agent = max(completed_agents, key=lambda x: x[1]['elapsed_time'])
+            if slowest_agent[1]['elapsed_time'] > 10:
+                insights.append(f"🕐 {slowest_agent[1]['icon']} {slowest_agent[1]['name']} is the bottleneck ({slowest_agent[1]['elapsed_time']:.1f}s)")
+        
+        # Display insights
+        for insight in insights:
+            st.info(insight)
+        
+        if not insights:
+            st.success("🎯 All agents performing optimally!")
 
 # Global visualizer instance
 _visualizer = PipelineVisualizer()

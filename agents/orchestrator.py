@@ -177,7 +177,7 @@ Return a JSON describing the merged specification:
             status=Status.DRAFT
         )
     
-    def process_prompt_bundle(self, prompt_bundle: PromptBundle) -> Union[GeometrySpec, AgentError]:
+    def process_prompt_bundle(self, prompt_bundle: PromptBundle, update_callback=None) -> Union[GeometrySpec, AgentError]:
         """Process the initial prompt bundle through prompt and vision interpreters."""
         logger.info(f"Processing prompt bundle: {prompt_bundle.prompt_id}")
         
@@ -202,6 +202,10 @@ Return a JSON describing the merged specification:
                                      "Prompt analyzed successfully! Geometric objects and constraints identified.", 1.0,
                                      prompt_result.agent_reasoning.get('prompt_interpreter', ''))
         
+        # Update displays after prompt interpretation
+        if update_callback:
+            update_callback()
+        
         prompt_spec = prompt_result
         vision_spec = None
         
@@ -224,6 +228,10 @@ Return a JSON describing the merged specification:
                     
                     visualizer.update_agent_status("image_preprocessor", AgentState.COMPLETE,
                                                  "Image enhanced successfully!", 1.0)
+                    
+                    # Update displays after image preprocessing
+                    if update_callback:
+                        update_callback()
                     
                     clean_uri = clean_result
                     
@@ -248,6 +256,10 @@ Return a JSON describing the merged specification:
                         visualizer.update_agent_status("vision_interpreter", AgentState.COMPLETE,
                                                      f"Visual geometry analyzed! Confidence: {vision_result.confidence:.2f}", 1.0,
                                                      vision_result.agent_reasoning.get('vision_interpreter', ''))
+                        
+                        # Update displays after vision interpretation
+                        if update_callback:
+                            update_callback()
                         
                         vision_spec = vision_result
                         break  # Use first successful vision interpretation
@@ -292,7 +304,7 @@ The pipeline successfully integrated text and vision analysis to create a compre
         logger.info(f"Successfully processed prompt bundle with {len(merged_spec.objects)} objects")
         return merged_spec
     
-    def process_full_pipeline(self, prompt_bundle: PromptBundle) -> Union[FinalAssets, AgentError]:
+    def process_full_pipeline(self, prompt_bundle: PromptBundle, update_callback=None) -> Union[FinalAssets, AgentError]:
         """Process the complete pipeline from prompt to final assets."""
         
         try:
@@ -307,11 +319,15 @@ The pipeline successfully integrated text and vision analysis to create a compre
             visualizer.update_agent_status("orchestrator", AgentState.THINKING, 
                                          "Starting pipeline coordination...", 0.1)
             
+            # Call update callback if provided
+            if update_callback:
+                update_callback()
+            
             # Step 1-2: Process prompt and images
             visualizer.update_agent_status("orchestrator", AgentState.PROCESSING, 
                                          "Processing prompt and images...", 0.2)
             
-            geometry_spec = self.process_prompt_bundle(prompt_bundle)
+            geometry_spec = self.process_prompt_bundle(prompt_bundle, update_callback)
             if isinstance(geometry_spec, AgentError):
                 visualizer.update_agent_status("orchestrator", AgentState.ERROR, 
                                              "Error in prompt/image processing")
@@ -320,6 +336,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
             self.session_data[session_id]["geometry_spec"] = geometry_spec
             visualizer.update_agent_status("orchestrator", AgentState.PROCESSING, 
                                          "Prompt and images processed successfully", 0.3)
+            
+            # Update displays after prompt/image processing
+            if update_callback:
+                update_callback()
             
             # Step 3: Symbolic Geometry Planning - Solve constraints mathematically
             logger.info("Starting symbolic geometry planning...")
@@ -335,6 +355,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
             visualizer.update_agent_status("symbolic_geometry_planner", AgentState.COMPLETE,
                                          "Mathematical constraints solved successfully!", 1.0,
                                          coordinate_solution.agent_reasoning.get('symbolic_geometry_planner', ''))
+            
+            # Update displays after symbolic planning
+            if update_callback:
+                update_callback()
             
             self.session_data[session_id]["coordinate_solution"] = coordinate_solution
             
@@ -378,6 +402,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
                                          "Beautiful SVG layout created!", 1.0,
                                          layout_plan.agent_reasoning.get('layout_designer', ''))
             
+            # Update displays after layout design
+            if update_callback:
+                update_callback()
+            
             self.session_data[session_id]["layout_plan"] = layout_plan
             
             # Merge layout designer reasoning
@@ -401,6 +429,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
                                          "Final outputs rendered and optimized!", 1.0,
                                          render_set.agent_reasoning.get('renderer', ''))
             
+            # Update displays after rendering
+            if update_callback:
+                update_callback()
+            
             self.session_data[session_id]["render_set"] = render_set
             
             # Merge renderer reasoning
@@ -423,6 +455,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
             visualizer.update_agent_status("math_consistency_verifier", AgentState.COMPLETE,
                                          f"Mathematical verification complete! Status: {qa_report.status}", 1.0,
                                          qa_report.agent_reasoning.get('math_consistency_verifier', ''))
+            
+            # Update displays after verification
+            if update_callback:
+                update_callback()
             
             self.session_data[session_id]["qa_report"] = qa_report
             
@@ -454,6 +490,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
             # Final orchestrator update
             visualizer.update_agent_status("orchestrator", AgentState.COMPLETE,
                                          "🎉 Complete pipeline successful! All agents coordinated perfectly!", 1.0)
+            
+            # Final display update
+            if update_callback:
+                update_callback()
             
             logger.info("🎉 Complete pipeline processing successful!")
             return final_assets

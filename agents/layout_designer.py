@@ -170,7 +170,8 @@ Think step-by-step about the best way to visualize this geometry clearly and bea
             layout_plan = LayoutPlan(
                 svg=svg_content,
                 labels=labels,
-                style_tokens=style_tokens
+                style_tokens=style_tokens,
+                agent_reasoning={'layout_designer': reasoning}
             )
             
             return layout_plan
@@ -197,7 +198,8 @@ Think step-by-step about the best way to visualize this geometry clearly and bea
                 "secondary_color": "#A23B72", 
                 "stroke_width": "2",
                 "font_family": "Arial, sans-serif"
-            }
+            },
+            agent_reasoning={'layout_designer': "Fallback layout created due to AI parsing error. Using simple geometric rendering."}
         )
 
     def _create_fallback_svg(self, coordinate_solution: CoordinateSolution) -> str:

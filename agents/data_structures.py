@@ -105,6 +105,9 @@ class LayoutPlan:
     svg: str  # SVG string with geometry-only content
     labels: List[Dict[str, Any]] = field(default_factory=list)
     style_tokens: Dict[str, Any] = field(default_factory=dict)
+    
+    # Agent reasoning and processing info
+    agent_reasoning: Dict[str, str] = field(default_factory=dict)  # Agent reasoning
 
 
 @dataclass

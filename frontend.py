@@ -7,8 +7,10 @@ import streamlit as st
 import json
 import tempfile
 import os
+import time
 from agents.data_structures import PromptBundle, Status
 from agents.orchestrator import handle
+from agents.pipeline_visualizer import get_visualizer
 import logging
 
 # Configure logging
@@ -335,6 +337,26 @@ def main():
     
     # Process the input
     if process_button and user_prompt.strip():
+        # Initialize visual pipeline
+        visualizer = get_visualizer()
+        
+        # Create placeholders for real-time updates
+        st.markdown("---")
+        pipeline_container = st.container()
+        logs_container = st.container()
+        
+        with pipeline_container:
+            visualizer.display_pipeline_visual()
+        
+        with logs_container:
+            col1, col2 = st.columns(2)
+            with col1:
+                visualizer.display_server_logs()
+            with col2:
+                visualizer.display_agent_handoff_sequence()
+        
+        st.markdown("---")
+        
         with st.spinner("🧠 Gemini AI agents are thinking..."):
             try:
                 # Create prompt bundle

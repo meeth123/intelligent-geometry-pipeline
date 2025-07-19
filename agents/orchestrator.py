@@ -21,6 +21,7 @@ from . import symbolic_geometry_planner
 from . import layout_designer
 from . import renderer
 from . import math_consistency_verifier
+from .pipeline_visualizer import get_visualizer, AgentState
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -181,8 +182,14 @@ Return a JSON describing the merged specification:
         logger.info(f"Processing prompt bundle: {prompt_bundle.prompt_id}")
         
         # Step 1: Process text with Prompt Interpreter
+        visualizer = get_visualizer()
+        visualizer.update_agent_status("prompt_interpreter", AgentState.THINKING,
+                                     "Analyzing your prompt and extracting geometric intent...", 0.1)
+        
         prompt_result = prompt_interpreter.handle(prompt_bundle)
         if isinstance(prompt_result, AgentError):
+            visualizer.update_agent_status("prompt_interpreter", AgentState.ERROR,
+                                         "Failed to interpret prompt")
             if prompt_result.error == "UNRECOGNIZED_TEXT":
                 return AgentError(
                     error="UNRECOGNIZED_TEXT",
@@ -190,6 +197,10 @@ Return a JSON describing the merged specification:
                     details={"original_error": prompt_result.message}
                 )
             return prompt_result
+        
+        visualizer.update_agent_status("prompt_interpreter", AgentState.COMPLETE,
+                                     "Prompt analyzed successfully! Geometric objects and constraints identified.", 1.0,
+                                     prompt_result.agent_reasoning.get('prompt_interpreter', ''))
         
         prompt_spec = prompt_result
         vision_spec = None
@@ -201,23 +212,43 @@ Return a JSON describing the merged specification:
             for image_uri in prompt_bundle.images:
                 # Step 2a: Image Pre-Processing
                 try:
+                    visualizer.update_agent_status("image_preprocessor", AgentState.THINKING,
+                                                 "Enhancing image quality for geometric analysis...", 0.1)
+                    
                     clean_result = image_preprocessor.handle(image_uri)
                     if isinstance(clean_result, AgentError):
+                        visualizer.update_agent_status("image_preprocessor", AgentState.ERROR,
+                                                     "Failed to preprocess image")
                         logger.warning(f"Image preprocessing failed for {image_uri}: {clean_result.message}")
                         continue
+                    
+                    visualizer.update_agent_status("image_preprocessor", AgentState.COMPLETE,
+                                                 "Image enhanced successfully!", 1.0)
                     
                     clean_uri = clean_result
                     
                     # Step 2b: Vision Interpretation
+                    visualizer.update_agent_status("vision_interpreter", AgentState.THINKING,
+                                                 "Analyzing geometric objects in the image...", 0.1)
+                    
                     vision_result = vision_interpreter.handle(prompt_bundle, clean_uri)
                     if isinstance(vision_result, AgentError):
+                        visualizer.update_agent_status("vision_interpreter", AgentState.ERROR,
+                                                     "Failed to interpret visual geometry")
                         logger.warning(f"Vision interpretation failed: {vision_result.message}")
                         continue
                     
                     if isinstance(vision_result, GeometrySpec):
                         if vision_result.confidence and vision_result.confidence < 0.5:
+                            visualizer.update_agent_status("vision_interpreter", AgentState.ERROR,
+                                                         "Vision confidence too low, needs better photo")
                             logger.warning("Vision confidence too low, needs better photo")
                             continue
+                        
+                        visualizer.update_agent_status("vision_interpreter", AgentState.COMPLETE,
+                                                     f"Visual geometry analyzed! Confidence: {vision_result.confidence:.2f}", 1.0,
+                                                     vision_result.agent_reasoning.get('vision_interpreter', ''))
+                        
                         vision_spec = vision_result
                         break  # Use first successful vision interpretation
                         
@@ -265,22 +296,45 @@ The pipeline successfully integrated text and vision analysis to create a compre
         """Process the complete pipeline from prompt to final assets."""
         
         try:
+            # Initialize visualizer
+            visualizer = get_visualizer()
+            
             # Store prompt bundle for reference
             session_id = prompt_bundle.prompt_id
             self.session_data[session_id] = {"prompt_bundle": prompt_bundle}
             
+            # Update orchestrator status
+            visualizer.update_agent_status("orchestrator", AgentState.THINKING, 
+                                         "Starting pipeline coordination...", 0.1)
+            
             # Step 1-2: Process prompt and images
+            visualizer.update_agent_status("orchestrator", AgentState.PROCESSING, 
+                                         "Processing prompt and images...", 0.2)
+            
             geometry_spec = self.process_prompt_bundle(prompt_bundle)
             if isinstance(geometry_spec, AgentError):
+                visualizer.update_agent_status("orchestrator", AgentState.ERROR, 
+                                             "Error in prompt/image processing")
                 return geometry_spec
             
             self.session_data[session_id]["geometry_spec"] = geometry_spec
+            visualizer.update_agent_status("orchestrator", AgentState.PROCESSING, 
+                                         "Prompt and images processed successfully", 0.3)
             
             # Step 3: Symbolic Geometry Planning - Solve constraints mathematically
             logger.info("Starting symbolic geometry planning...")
+            visualizer.update_agent_status("symbolic_geometry_planner", AgentState.THINKING,
+                                         "Analyzing geometric constraints and solving mathematically...", 0.1)
+            
             coordinate_solution = symbolic_geometry_planner.handle(geometry_spec)
             if isinstance(coordinate_solution, AgentError):
+                visualizer.update_agent_status("symbolic_geometry_planner", AgentState.ERROR,
+                                             "Failed to solve geometric constraints")
                 return coordinate_solution
+            
+            visualizer.update_agent_status("symbolic_geometry_planner", AgentState.COMPLETE,
+                                         "Mathematical constraints solved successfully!", 1.0,
+                                         coordinate_solution.agent_reasoning.get('symbolic_geometry_planner', ''))
             
             self.session_data[session_id]["coordinate_solution"] = coordinate_solution
             
@@ -311,9 +365,18 @@ The pipeline successfully integrated text and vision analysis to create a compre
             
             # Step 4: Layout Design - Create SVG layout from coordinates
             logger.info("Starting layout design...")
+            visualizer.update_agent_status("layout_designer", AgentState.THINKING,
+                                         "Designing beautiful SVG layout from coordinates...", 0.1)
+            
             layout_plan = layout_designer.handle(coordinate_solution)
             if isinstance(layout_plan, AgentError):
+                visualizer.update_agent_status("layout_designer", AgentState.ERROR,
+                                             "Failed to create layout design")
                 return layout_plan
+            
+            visualizer.update_agent_status("layout_designer", AgentState.COMPLETE,
+                                         "Beautiful SVG layout created!", 1.0,
+                                         layout_plan.agent_reasoning.get('layout_designer', ''))
             
             self.session_data[session_id]["layout_plan"] = layout_plan
             
@@ -325,9 +388,18 @@ The pipeline successfully integrated text and vision analysis to create a compre
             
             # Step 5: Rendering - Create final optimized outputs
             logger.info("Starting rendering...")
+            visualizer.update_agent_status("renderer", AgentState.THINKING,
+                                         "Optimizing and rendering final outputs...", 0.1)
+            
             render_set = renderer.handle(layout_plan)
             if isinstance(render_set, AgentError):
+                visualizer.update_agent_status("renderer", AgentState.ERROR,
+                                             "Failed to render final outputs")
                 return render_set
+            
+            visualizer.update_agent_status("renderer", AgentState.COMPLETE,
+                                         "Final outputs rendered and optimized!", 1.0,
+                                         render_set.agent_reasoning.get('renderer', ''))
             
             self.session_data[session_id]["render_set"] = render_set
             
@@ -339,9 +411,18 @@ The pipeline successfully integrated text and vision analysis to create a compre
             
             # Step 6: Math Consistency Verification - Verify solution accuracy
             logger.info("Starting mathematical verification...")
+            visualizer.update_agent_status("math_consistency_verifier", AgentState.THINKING,
+                                         "Verifying mathematical accuracy and constraint satisfaction...", 0.1)
+            
             qa_report = math_consistency_verifier.handle(coordinate_solution, tolerance_mm=0.1)
             if isinstance(qa_report, AgentError):
+                visualizer.update_agent_status("math_consistency_verifier", AgentState.ERROR,
+                                             "Failed to verify mathematical accuracy")
                 return qa_report
+            
+            visualizer.update_agent_status("math_consistency_verifier", AgentState.COMPLETE,
+                                         f"Mathematical verification complete! Status: {qa_report.status}", 1.0,
+                                         qa_report.agent_reasoning.get('math_consistency_verifier', ''))
             
             self.session_data[session_id]["qa_report"] = qa_report
             
@@ -369,6 +450,10 @@ The pipeline successfully integrated text and vision analysis to create a compre
                 "agent_reasoning": coordinate_solution.agent_reasoning,
                 "pipeline_status": "COMPLETE"
             }
+            
+            # Final orchestrator update
+            visualizer.update_agent_status("orchestrator", AgentState.COMPLETE,
+                                         "🎉 Complete pipeline successful! All agents coordinated perfectly!", 1.0)
             
             logger.info("🎉 Complete pipeline processing successful!")
             return final_assets

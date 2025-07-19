@@ -1,0 +1,134 @@
+Shared object glossary (all JSON unless noted)
+Object	Core fields (minimum)	Produced by	Consumed by
+PromptBundle	prompt_id, text, (opt.) images[], meta	external caller	Orchestrator
+GeometrySpec	objects[], constraints[], (opt.) annotations	Prompt Interpreter, Vision Interpreter	Orchestrator → Symbolic Planner
+CoordinateSolution	points{}, proof, status, (opt.) notes	Symbolic Planner	Layout Designer, Verifier
+LayoutPlan	svg (geometry‑only group), labels[], style_tokens	Layout Designer	Renderer
+RenderSet (files)	render.svg, render.png	Renderer	Verifier, Stylist
+QAReport	status, tolerance_mm, issues[], (opt.) error_mask_uri	Verifier	Orchestrator, Stylist
+FinalAssets (files)	final.svg, final.png	Stylist	Orchestrator → caller
+
+Agent‑by‑agent contracts
+1. 0 Orchestrator
+Purpose central brain; routes objects, handles retries/clarifications.
+
+Receives	From
+PromptBundle	external API / CLI
+
+Produces / Emits	Consumed by
+PromptBundle → Prompt Interpreter	Prompt Interpreter
+image binaries → Image Pre‑Processor	Image Pre‑Processor
+merged GeometrySpec	Symbolic Planner
+CoordinateSolution (for record)	Layout Designer, Verifier
+QAReport failures → Human QA (opt.)	Human QA
+FinalAssets	returns to caller
+
+2. 1 Prompt Interpreter
+Purpose parse user text → first‑pass GeometrySpec.
+
+Receives	From	Notes
+PromptBundle	Orchestrator	Ignore images array
+
+Produces	Consumed by
+GeometrySpec (status:"draft")	Orchestrator
+
+Fails with {"error":"UNRECOGNIZED_TEXT"} → Orchestrator asks user to rephrase.
+
+1b Image Pre‑Processor
+Purpose deskew / denoise any reference photo.
+
+Receives	From
+Binary image (URI)	Orchestrator
+
+Produces	Consumed by
+clean_uri (string)	Vision Interpreter
+
+1c Vision Interpreter
+Purpose convert sketch → GeometrySpec fragment.
+
+Receives	From
+PromptBundle (read‑only)	Orchestrator
+clean_uri	Image Pre‑Processor
+
+Produces	Consumed by
+GeometrySpec fragment (status:"vision", confidence)	Orchestrator
+
+If confidence < 0.5 returns {status:"needs_better_photo"}; Orchestrator relays to user.
+
+2 Symbolic Geometry Planner
+Purpose solve constraints exactly.
+
+Receives	From	Key fields required
+Merged GeometrySpec	Orchestrator	objects, constraints
+
+Produces	Consumed by
+CoordinateSolution	LayoutDesigner, Verifier
+
+status can be solved, ambiguous, or impossible.
+If not solved, Orchestrator halts and requests user clarification.
+
+3 Layout Designer
+Purpose choose viewbox, label placement.
+
+Receives	From
+CoordinateSolution (status:"solved")	Symbolic Planner
+
+Produces	Consumed by
+LayoutPlan (SVG skeleton + label metadata)	Renderer
+
+4 Renderer
+Purpose turn plan into pixels & final vector.
+
+Receives	From	Required fields
+LayoutPlan	LayoutDesigner	svg, labels[]
+
+Produces	Consumed by
+render.svg (authoritative geometry)	Verifier, Stylist
+render.png (2× retina, 1024×1024)	Verifier, Stylist
+
+Failures (RENDER_ERROR) bubble to Orchestrator for retry.
+
+5 Math‑ConsistencyVerifier
+Purpose assert raster/vector matches ground truth.
+
+Receives	From
+CoordinateSolution, render.svg, render.png	Renderer
+
+Produces	Consumed by
+QAReport	Orchestrator, Stylist
+
+status:"fail" includes issues[]; Orchestrator may trigger Human QA or ask Renderer to re‑run with higher DPI.
+
+6Stylist
+Purpose apply brand palette, watermark, generate variants.
+
+Receives	From	Preconditions
+render.svg, render.png	Renderer	Verifier status:"pass"
+QAReport	Verifier	to embed QC checksum
+
+Produces	Consumed by
+final.svg, final.png	Orchestrator
+
+7 Human‑in‑the‑Loop QA (optional)
+Purpose manual inspection of failures or high‑stakes diagrams.
+
+Receives	From
+render.png, QAReport, PromptBundle	Orchestrator
+
+Produces	Consumed by
+approval (accept / reject / revise:<notes>)	Orchestrator
+
+Sequence diagram
+User → Orchestrator: send PromptBundle.
+
+Orchestrator ➜ PromptInterpreter (text) & (if images) ➜ Image Pre‑Processor.
+
+Pre‑Processor ➜ Vision Interpreter.
+
+Orchestrator merges Interpreter + Vision specs → Symbolic Planner.
+
+Planner → Layout Designer → Renderer.
+
+Renderer outputs → Verifier; if pass ➜ Stylist; if fail ➜ Human QA or retry logic.
+
+Stylist → Orchestrator → user (FinalAssets).

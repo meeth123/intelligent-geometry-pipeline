@@ -1,0 +1,37 @@
+# geometry-pipeline-dag.yaml
+version: "1.0"
+
+agents:
+  prompt_interpreter:
+    entrypoint: agents.prompt_interpreter:handle
+  image_preprocessor:
+    entrypoint: agents.image_preprocessor:handle
+  vision_interpreter:
+    entrypoint: agents.vision_interpreter:handle
+  symbolic_geometry_planner:
+    entrypoint: agents.sym_planner:handle
+  layout_designer:
+    entrypoint: agents.layout_designer:handle
+  renderer:
+    entrypoint: agents.renderer:handle
+  verifier:
+    entrypoint: agents.verifier:handle
+  stylist:
+    entrypoint: agents.stylist:handle
+
+pipelines:
+  generate_geometry_image:
+    # A linear happy‑path; Orchestrator auto‑created by Cursor
+    steps:
+      - prompt_interpreter
+      - conditional:
+          when: "{{input.images | length > 0}}"
+          then:
+            - image_preprocessor
+            - vision_interpreter
+      - symbolic_geometry_planner
+      - layout_designer
+      - renderer
+      - verifier
+      - stylist
+    on_failure: "abort"         # or "skip_to: human_qa"

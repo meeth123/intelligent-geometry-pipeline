@@ -57,7 +57,7 @@ graph LR
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/intelligent-geometry-pipeline.git
+   git clone https://github.com/meeth123/intelligent-geometry-pipeline.git
    cd intelligent-geometry-pipeline
    ```
 
@@ -189,8 +189,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 📞 Support
 
-- 🐛 **Bug Reports**: [Open an issue](https://github.com/yourusername/intelligent-geometry-pipeline/issues)
-- 💡 **Feature Requests**: [Discussions](https://github.com/yourusername/intelligent-geometry-pipeline/discussions)
+- 🐛 **Bug Reports**: [Open an issue](https://github.com/meeth123/intelligent-geometry-pipeline/issues)
+- 💡 **Feature Requests**: [Discussions](https://github.com/meeth123/intelligent-geometry-pipeline/discussions)
 - 📧 **Contact**: your.email@example.com
 
 ---

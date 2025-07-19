@@ -19,7 +19,7 @@ setup(
     description="Complete 6-Agent AI System powered by Google Gemini 2.5 Pro for Geometric Reasoning",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/intelligent-geometry-pipeline",
+    url="https://github.com/meeth123/intelligent-geometry-pipeline",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
@@ -43,8 +43,8 @@ setup(
     },
     keywords="ai gemini geometry mathematics constraint-solving computer-vision",
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/intelligent-geometry-pipeline/issues",
-        "Source": "https://github.com/yourusername/intelligent-geometry-pipeline",
-        "Documentation": "https://github.com/yourusername/intelligent-geometry-pipeline/wiki",
+        "Bug Reports": "https://github.com/meeth123/intelligent-geometry-pipeline/issues",
+        "Source": "https://github.com/meeth123/intelligent-geometry-pipeline",
+        "Documentation": "https://github.com/meeth123/intelligent-geometry-pipeline/wiki",
     },
 ) 

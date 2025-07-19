@@ -95,6 +95,9 @@ class GeminiSymbolicGeometryPlanner:
             }
             constraints_info.append(constraint_info)
         
+        # DEBUG: Log constraints being processed
+        logger.info(f"DEBUG: Processing {len(constraints_info)} constraints: {constraints_info}")
+        
         system_prompt = f"""
 You are an expert mathematical constraint solver AND intelligent geometric designer specializing in computational geometry.
 
@@ -102,7 +105,7 @@ Your DUAL ROLE:
 1. Make INTELLIGENT ASSUMPTIONS for incomplete specifications
 2. Solve mathematical constraints with precision
 
-STEP 1: INTELLIGENT ASSUMPTION-MAKING
+STEP 1: CONSTRAINT-AWARE ASSUMPTION-MAKING
 Analyze the geometry specification and identify missing information:
 
 OBJECTS (may have incomplete properties):
@@ -111,24 +114,33 @@ OBJECTS (may have incomplete properties):
 CONSTRAINTS (relationships to satisfy):
 {json.dumps(constraints_info, indent=2)}
 
-For ANY missing dimensions or unspecified properties, make GEOMETRICALLY INTELLIGENT assumptions:
+CRITICAL: First analyze constraints to understand requirements, then make compatible assumptions.
 
-ASSUMPTION PRINCIPLES:
-- **Circles**: Default radius ~5-10 units for good visibility
-- **Triangles**: Choose type for best constraint satisfaction:
-  * For inscribed circle: Use triangle with integer coordinates for clarity
-  * For angle bisectors: Isosceles or equilateral for symmetry
-  * Default side length ~10 units
-- **Squares/Rectangles**: Default side ~8-10 units for proportion
-- **Lines**: Default length ~12 units or as needed for constraints
-- **Positioning**: Center constructions at origin for symmetry
-- **Optimization**: Choose proportions that create clear, non-overlapping visualization
+CONSTRAINT ANALYSIS GUIDELINES:
+- **"longest side horizontal"**: Requires unequal sides → Use scalene or isosceles (NOT equilateral)
+- **"inscribed circle"**: Needs well-defined incenter → Any triangle type works
+- **"angle bisectors"**: Benefits from symmetry → Isosceles preferred if no other constraints
+- **"parallel/perpendicular"**: Requires specific orientations → Align with coordinate axes
+- **"equal lengths"**: Constrains dimensions → Match specified relationships
 
-GEOMETRIC INTELLIGENCE:
-- Inscribed circle in triangle: Choose triangle dimensions that produce nice radius values
-- Angle bisectors: Use symmetric triangles where bisectors have elegant coordinates  
-- Multiple shapes: Scale appropriately so all shapes are clearly visible
-- Complex constructions: Optimize for educational clarity and mathematical elegance
+CONSTRAINT-AWARE ASSUMPTION PRINCIPLES:
+- **Triangles**: 
+  * If "longest side" mentioned: Use scalene (e.g., sides 6, 8, 10) or isosceles (5, 5, 8)
+  * If symmetry needed: Use isosceles (two equal sides)
+  * If no constraints: Use equilateral for maximum symmetry
+  * Position longest side horizontally if constraint specifies
+- **Circles**: Default radius ~5-10 units, adjust for constraint compatibility
+- **Positioning**: Honor orientation constraints (horizontal, vertical, angled)
+- **Scaling**: Choose dimensions that satisfy all constraints clearly
+
+GEOMETRIC INTELLIGENCE (CONSTRAINT-FIRST):
+- **Layout constraints FIRST**: Always ensure assumptions make constraints satisfiable
+- **"Longest side horizontal"**: Choose scalene triangle (e.g., sides 6,8,10), place longest side (10) horizontally
+- **Inscribed circle**: Choose triangle dimensions that produce nice radius values
+- **Angle bisectors**: Use symmetric triangles where bisectors have elegant coordinates  
+- **Orientation requirements**: Align shapes with specified directions before other optimizations
+- **Multiple shapes**: Scale appropriately so all shapes are clearly visible AND constraints satisfied
+- **Complex constructions**: Optimize for educational clarity while honoring ALL constraints
 
 STEP 2: MATHEMATICAL CONSTRAINT SOLVING
 After making intelligent assumptions, solve constraints precisely:
@@ -157,15 +169,24 @@ CONSTRAINT FORMULAS:
    - Check for mathematical consistency
    - Ensure realistic geometry (no overlapping unless intended)
 
-Return a JSON with intelligent assumptions AND complete coordinate solution:
+Return a JSON with constraint analysis, intelligent assumptions AND complete coordinate solution:
 {{
-    "reasoning": "Step-by-step process: assumptions made + mathematical derivation",
+    "reasoning": "Step-by-step process: constraint analysis + assumptions made + mathematical derivation",
+    "constraint_analysis": [
+        {{
+            "constraint_type": "parallel|inscribed|angle_bisector|tangent",
+            "description": "what the constraint requires",
+            "implications": "how this affects geometric choices",
+            "satisfaction_strategy": "approach to ensure constraint can be met"
+        }}
+    ],
     "assumptions_made": [
         {{
             "object_id": "object_id",
-            "missing_property": "radius|side_length|dimensions|type",
+            "missing_property": "radius|side_length|dimensions|type|orientation",
             "assumed_value": "value_chosen",
-            "rationale": "why this value was chosen for optimal visualization/constraints"
+            "rationale": "why this value was chosen for optimal visualization/constraints",
+            "constraint_compatibility": "how this assumption enables constraint satisfaction"
         }}
     ],
     "coordinate_system": {{

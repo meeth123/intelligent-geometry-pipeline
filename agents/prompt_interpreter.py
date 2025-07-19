@@ -297,19 +297,22 @@ Focus on INTENT EXTRACTION, not assumption-making. Let the symbolic planner hand
             description = constraint_data.get("description", "")
             
             # Map indices to object IDs
-            if len(object_indices) >= 2 and all(isinstance(i, int) and i < len(objects) for i in object_indices):
+            # Support both single-object constraints (orientation, scaling) and multi-object constraints (relative positioning)
+            if len(object_indices) >= 1 and all(isinstance(i, int) and i < len(objects) for i in object_indices):
                 try:
                     object_ids = [objects[i].id for i in object_indices]
-                    if len(object_ids) >= 2:
-                        constraint = create_constraint(
-                            constraint_type, 
-                            object_ids, 
-                            description=description,
-                            **parameters
-                        )
-                        constraints.append(constraint)
-                except (IndexError, TypeError):
-                    logger.warning(f"Invalid object indices in constraint: {object_indices}")
+                    constraint = create_constraint(
+                        constraint_type, 
+                        object_ids, 
+                        description=description,
+                        **parameters
+                    )
+                    constraints.append(constraint)
+                    logger.info(f"Created constraint: {constraint_type} for objects {object_ids}")
+                except (IndexError, TypeError) as e:
+                    logger.warning(f"Invalid object indices in constraint: {object_indices}, error: {e}")
+            else:
+                logger.warning(f"Skipping constraint with invalid indices: {object_indices}")
         
         return objects, constraints
     
